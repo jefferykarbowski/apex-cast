@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<ruleset name="Apex Cast">
+	<description>PHP_CodeSniffer rules for Apex Cast for WooCommerce.</description>
+
+	<!-- Files to scan -->
+	<file>apex-cast.php</file>
+	<file>includes/</file>
+	<file>tests/</file>
+
+	<!-- Exclusions -->
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/node_modules/*</exclude-pattern>
+	<exclude-pattern>*/assets/build/*</exclude-pattern>
+	<exclude-pattern>*/tests/coverage/*</exclude-pattern>
+
+	<!-- Scan only PHP -->
+	<arg name="extensions" value="php"/>
+
+	<!-- Run with colors and progress -->
+	<arg name="colors"/>
+	<arg value="ps"/>
+
+	<!-- Use a parallel scan -->
+	<arg name="parallel" value="8"/>
+
+	<!-- Use cache for faster repeat runs -->
+	<arg name="cache" value=".phpcs-cache"/>
+
+	<!-- WordPress Coding Standards -->
+	<rule ref="WordPress"/>
+	<rule ref="WordPress-Extra"/>
+
+	<!-- Text domain enforcement -->
+	<rule ref="WordPress.WP.I18n">
+		<properties>
+			<property name="text_domain" type="array">
+				<element value="apex-cast"/>
+			</property>
+		</properties>
+	</rule>
+
+	<!-- PHP version compatibility -->
+	<config name="testVersion" value="8.1-"/>
+	<rule ref="PHPCompatibilityWP"/>
+
+	<!-- Minimum WP version supported -->
+	<config name="minimum_supported_wp_version" value="6.0"/>
+</ruleset>

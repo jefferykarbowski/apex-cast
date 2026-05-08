@@ -1,0 +1,30 @@
+{
+  "name": "apex-cast",
+  "version": "0.1.0",
+  "description": "Apex Cast for WooCommerce — admin-side React assets",
+  "private": true,
+  "license": "GPL-2.0-or-later",
+  "homepage": "https://github.com/jefferykarbowski/apex-cast",
+  "author": "Apex Chute LLC",
+  "scripts": {
+    "build": "wp-scripts build assets/src/metabox/index.jsx assets/src/settings/index.jsx --output-path=assets/build",
+    "start": "wp-scripts start assets/src/metabox/index.jsx assets/src/settings/index.jsx --output-path=assets/build",
+    "lint": "wp-scripts lint-js assets/src",
+    "lint:fix": "wp-scripts lint-js assets/src --fix",
+    "format": "wp-scripts format assets/src",
+    "test": "wp-scripts test-unit-js",
+    "test:e2e": "wp-scripts test-playwright",
+    "packages-update": "wp-scripts packages-update"
+  },
+  "devDependencies": {
+    "@wordpress/scripts": "^28.0.0",
+    "@wordpress/eslint-plugin": "^19.0.0"
+  },
+  "dependencies": {
+    "@wordpress/api-fetch": "^7.0.0",
+    "@wordpress/components": "^28.0.0",
+    "@wordpress/element": "^6.0.0",
+    "@wordpress/i18n": "^5.0.0",
+    "@wordpress/icons": "^10.0.0"
+  }
+}

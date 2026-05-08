@@ -1,0 +1,45 @@
+# Dependencies
+/node_modules/
+/vendor/
+
+# Build output
+/assets/build/
+*.zip
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.local
+
+# wp-env / Local WP
+.wp-env.override.json
+
+# Test artifacts
+/tests/coverage/
+/tests/.phpunit.result.cache
+/tests/playwright/.cache/
+/tests/playwright/test-results/
+/tests/playwright/playwright-report/
+
+# Lint caches
+.eslintcache
+.phpcs-cache
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temp
+/tmp/

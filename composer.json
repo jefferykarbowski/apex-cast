@@ -1,0 +1,52 @@
+{
+    "name": "apexchute/apex-cast",
+    "description": "Generate AI social posts from any WooCommerce product, review them inline, and broadcast to Postiz, Buffer, or your own scheduler.",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "homepage": "https://github.com/jefferykarbowski/apex-cast",
+    "authors": [
+        {
+            "name": "Apex Chute LLC",
+            "homepage": "https://apexchute.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.1",
+        "guzzlehttp/guzzle": "^7.8",
+        "paragonie/sodium_compat": "^1.21"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6",
+        "phpstan/phpstan": "^1.10",
+        "szepeviktor/phpstan-wordpress": "^1.3",
+        "php-stubs/woocommerce-stubs": "^9.0",
+        "squizlabs/php_codesniffer": "^3.7",
+        "wp-coding-standards/wpcs": "^3.0",
+        "phpcompatibility/phpcompatibility-wp": "^2.1",
+        "yoast/phpunit-polyfills": "^2.0",
+        "10up/wp_mock": "^1.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "ApexChute\\ApexCast\\": "includes/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "ApexChute\\ApexCast\\Tests\\": "tests/phpunit/"
+        }
+    },
+    "scripts": {
+        "lint": "phpcs --standard=phpcs.xml.dist",
+        "lint:fix": "phpcbf --standard=phpcs.xml.dist",
+        "analyze": "phpstan analyse --memory-limit=1G",
+        "test": "phpunit",
+        "test:coverage": "phpunit --coverage-html tests/coverage"
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        },
+        "sort-packages": true
+    }
+}
