@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace ApexChute\ApexCast\AI;
 
+use ApexChute\ApexCast\Support\TestConnectionResult;
+
 /**
  * Anything that can generate platform-tailored social copy from product data.
  */

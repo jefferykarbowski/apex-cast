@@ -11,6 +11,8 @@ declare( strict_types=1 );
 
 namespace ApexChute\ApexCast\Adapters;
 
+use ApexChute\ApexCast\Support\TestConnectionResult;
+
 /**
  * Anything that can authenticate, queue posts to multiple platforms, and report status.
  *
@@ -33,14 +35,18 @@ interface BackendAdapterInterface {
 	 *
 	 * @return IntegrationInfo[]
 	 *
-	 * @throws BackendAdapterException
+	 * @throws BackendAdapterException When the backend call fails (auth, rate limit, network, etc.).
 	 */
 	public function fetch_integrations(): array;
 
 	/**
 	 * Upload media to the backend and return a backend-native reference.
 	 *
-	 * @throws BackendAdapterException
+	 * @param string $local_path Absolute filesystem path to the local asset to upload.
+	 * @param string $mime_type  MIME type of the asset (e.g. "image/jpeg").
+	 * @return MediaRef Backend-native pointer to the uploaded media.
+	 *
+	 * @throws BackendAdapterException When the upload fails.
 	 */
 	public function upload_media( string $local_path, string $mime_type ): MediaRef;
 
@@ -50,14 +56,20 @@ interface BackendAdapterInterface {
 	 * Implementations SHOULD batch all platforms into the smallest number of
 	 * backend API calls possible to respect rate limits.
 	 *
-	 * @throws BackendAdapterException
+	 * @param PostPayload $payload Normalized post payload.
+	 * @return QueueResult Backend identifier + initial status.
+	 *
+	 * @throws BackendAdapterException When the queue call fails.
 	 */
 	public function queue_post( PostPayload $payload ): QueueResult;
 
 	/**
 	 * Look up the status of a previously queued post.
 	 *
-	 * @throws BackendAdapterException
+	 * @param string $backend_post_id Identifier returned by `queue_post()`.
+	 * @return PostStatus Current status snapshot from the backend.
+	 *
+	 * @throws BackendAdapterException When the status call fails.
 	 */
 	public function get_post_status( string $backend_post_id ): PostStatus;
 

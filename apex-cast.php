@@ -42,9 +42,12 @@ if ( file_exists( APEX_CAST_PATH . 'vendor/autoload.php' ) ) {
  */
 function apex_cast_check_requirements(): bool {
 	if ( version_compare( PHP_VERSION, APEX_CAST_MIN_PHP, '<' ) ) {
-		add_action( 'admin_notices', function () {
-			echo '<div class="notice notice-error"><p><strong>Apex Cast:</strong> requires PHP ' . esc_html( APEX_CAST_MIN_PHP ) . ' or higher.</p></div>';
-		} );
+		add_action(
+			'admin_notices',
+			function () {
+				echo '<div class="notice notice-error"><p><strong>Apex Cast:</strong> requires PHP ' . esc_html( APEX_CAST_MIN_PHP ) . ' or higher.</p></div>';
+			}
+		);
 		return false;
 	}
 
@@ -53,9 +56,12 @@ function apex_cast_check_requirements(): bool {
 	}
 
 	if ( ! is_plugin_active( 'woocommerce/woocommerce.php' ) ) {
-		add_action( 'admin_notices', function () {
-			echo '<div class="notice notice-error"><p><strong>Apex Cast:</strong> requires WooCommerce to be active.</p></div>';
-		} );
+		add_action(
+			'admin_notices',
+			function () {
+				echo '<div class="notice notice-error"><p><strong>Apex Cast:</strong> requires WooCommerce to be active.</p></div>';
+			}
+		);
 		return false;
 	}
 
@@ -65,37 +71,49 @@ function apex_cast_check_requirements(): bool {
 /**
  * Declare WooCommerce HPOS (custom order tables) compatibility.
  */
-add_action( 'before_woocommerce_init', function () {
-	if ( class_exists( '\Automattic\WooCommerce\Utilities\FeaturesUtil' ) ) {
-		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+add_action(
+	'before_woocommerce_init',
+	function () {
+		if ( class_exists( '\Automattic\WooCommerce\Utilities\FeaturesUtil' ) ) {
+			\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true );
+		}
 	}
-} );
+);
 
 /**
  * Boot the plugin once WordPress + WooCommerce are ready.
  */
-add_action( 'plugins_loaded', function () {
-	if ( ! apex_cast_check_requirements() ) {
-		return;
-	}
+add_action(
+	'plugins_loaded',
+	function () {
+		if ( ! apex_cast_check_requirements() ) {
+			return;
+		}
 
-	// TODO: instantiate Plugin singleton once class-plugin.php is implemented.
-	// \ApexChute\ApexCast\Plugin::instance()->init();
-}, 20 );
+		Plugin::instance()->init();
+	},
+	20
+);
 
 /**
  * Activation hook — create custom tables, set default options.
  */
-register_activation_hook( __FILE__, function () {
-	// TODO: \ApexChute\ApexCast\Installer::activate();
-} );
+register_activation_hook(
+	__FILE__,
+	function () {
+		Installer::activate();
+	}
+);
 
 /**
  * Deactivation hook — clean up scheduled actions, transients.
  */
-register_deactivation_hook( __FILE__, function () {
-	// TODO: \ApexChute\ApexCast\Installer::deactivate();
-} );
+register_deactivation_hook(
+	__FILE__,
+	function () {
+		Installer::deactivate();
+	}
+);
 
 /**
  * Uninstall is handled by uninstall.php for proper cleanup of options + tables.

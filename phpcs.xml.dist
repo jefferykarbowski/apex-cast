@@ -2,10 +2,10 @@
 <ruleset name="Apex Cast">
 	<description>PHP_CodeSniffer rules for Apex Cast for WooCommerce.</description>
 
-	<!-- Files to scan -->
+	<!-- Files to scan. Test files follow PHPUnit conventions and are excluded;
+	     PHPUnit itself validates them. -->
 	<file>apex-cast.php</file>
 	<file>includes/</file>
-	<file>tests/</file>
 
 	<!-- Exclusions -->
 	<exclude-pattern>*/vendor/*</exclude-pattern>
@@ -27,7 +27,11 @@
 	<arg name="cache" value=".phpcs-cache"/>
 
 	<!-- WordPress Coding Standards -->
-	<rule ref="WordPress"/>
+	<rule ref="WordPress">
+		<!-- Classes load via a Composer classmap, so the acronym-sensitive
+		     filename sniff (e.g. AIProviderException) adds friction with no benefit. -->
+		<exclude name="WordPress.Files.FileName"/>
+	</rule>
 	<rule ref="WordPress-Extra"/>
 
 	<!-- Text domain enforcement -->

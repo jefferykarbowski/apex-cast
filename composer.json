@@ -27,14 +27,14 @@
         "10up/wp_mock": "^1.0"
     },
     "autoload": {
-        "psr-4": {
-            "ApexChute\\ApexCast\\": "includes/"
-        }
+        "classmap": [
+            "includes/"
+        ]
     },
     "autoload-dev": {
-        "psr-4": {
-            "ApexChute\\ApexCast\\Tests\\": "tests/phpunit/"
-        }
+        "classmap": [
+            "tests/phpunit/"
+        ]
     },
     "scripts": {
         "lint": "phpcs --standard=phpcs.xml.dist",
