@@ -22,3 +22,35 @@ if ( ! defined( 'ABSPATH' ) ) {
 if ( ! defined( 'AUTH_KEY' ) ) {
 	define( 'AUTH_KEY', 'apex-cast-phpunit-static-key-do-not-use-in-production-0123456789' );
 }
+
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
+	define( 'HOUR_IN_SECONDS', 3600 );
+}
+
+// In-memory stand-ins for the handful of WP functions our HTTP adapters touch
+// (transient-based rate limiting). The real WP runtime ships its own versions.
+if ( ! function_exists( 'get_transient' ) ) {
+	/**
+	 * Test-only stub: in-memory transient read.
+	 *
+	 * @param string $key Transient key.
+	 * @return mixed
+	 */
+	function get_transient( string $key ) {
+		return $GLOBALS['__apex_cast_test_transients'][ $key ] ?? false;
+	}
+
+	/**
+	 * Test-only stub: in-memory transient write.
+	 *
+	 * @param string $key        Transient key.
+	 * @param mixed  $value      Value to store.
+	 * @param int    $expiration Ignored in tests.
+	 * @return bool
+	 */
+	function set_transient( string $key, $value, int $expiration = 0 ): bool {
+		unset( $expiration );
+		$GLOBALS['__apex_cast_test_transients'][ $key ] = $value;
+		return true;
+	}
+}

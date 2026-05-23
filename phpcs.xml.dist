@@ -31,8 +31,19 @@
 		<!-- Classes load via a Composer classmap, so the acronym-sensitive
 		     filename sniff (e.g. AIProviderException) adds friction with no benefit. -->
 		<exclude name="WordPress.Files.FileName"/>
+
+		<!-- The only capability this plugin checks is WooCommerce's manage_woocommerce;
+		     the sniff doesn't know about WC-provided caps. -->
+		<exclude name="WordPress.WP.Capabilities"/>
+
+		<!-- Exception messages travel through REST JSON envelopes, never echoed as HTML.
+		     The sniff demands escaping at the throw site, which would be wrong here. -->
+		<exclude name="WordPress.Security.EscapeOutput.ExceptionNotEscaped"/>
 	</rule>
-	<rule ref="WordPress-Extra"/>
+	<rule ref="WordPress-Extra">
+		<exclude name="WordPress.WP.Capabilities"/>
+		<exclude name="WordPress.Security.EscapeOutput.ExceptionNotEscaped"/>
+	</rule>
 
 	<!-- Text domain enforcement -->
 	<rule ref="WordPress.WP.I18n">
