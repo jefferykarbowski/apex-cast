@@ -11,9 +11,9 @@ namespace ApexChute\ApexCast\Rest;
 
 use ApexChute\ApexCast\AI\AIProviderException;
 use ApexChute\ApexCast\AI\BrandVoice;
-use ApexChute\ApexCast\Adapters\BackendAdapterException;
-use ApexChute\ApexCast\Adapters\PostPayload;
 use ApexChute\ApexCast\Plugin;
+use ApexChute\ApexCast\Publishers\PublishRequest;
+use ApexChute\ApexCast\Publishers\PublisherException;
 use WP_REST_Request;
 use WP_REST_Response;
 
@@ -120,16 +120,6 @@ final class RestController {
 
 		register_rest_route(
 			self::REST_NAMESPACE,
-			'/integrations',
-			array(
-				'methods'             => 'GET',
-				'callback'            => array( $this, 'integrations' ),
-				'permission_callback' => $auth,
-			)
-		);
-
-		register_rest_route(
-			self::REST_NAMESPACE,
 			'/settings',
 			array(
 				array(
@@ -142,17 +132,6 @@ final class RestController {
 					'callback'            => array( $this, 'post_settings' ),
 					'permission_callback' => $auth,
 				),
-			)
-		);
-
-		register_rest_route(
-			self::REST_NAMESPACE,
-			'/webhook/(?P<adapter>[a-z0-9_-]+)',
-			array(
-				'methods'             => 'POST',
-				'callback'            => array( $this, 'webhook' ),
-				// Public on purpose — signature validation lives inside the handler (v0.2+).
-				'permission_callback' => '__return_true',
 			)
 		);
 	}
@@ -262,18 +241,18 @@ final class RestController {
 	}
 
 	/**
-	 * POST /send — queue a multi-platform post via the configured backend.
+	 * POST /send — publish a per-platform set of drafts via the publisher registry.
+	 *
+	 * Dispatches each requested platform to its registered publisher. Aggregates
+	 * the per-platform results into one job row and one response. Overall job
+	 * status is `sent` if all platforms succeeded, `partial` if some did and
+	 * some didn't, `failed` if none did.
 	 *
 	 * @param WP_REST_Request $request REST request.
 	 * @return WP_REST_Response
 	 */
 	public function send( WP_REST_Request $request ): WP_REST_Response {
-		$plugin  = Plugin::instance();
-		$adapter = $plugin->backend_adapter();
-		if ( null === $adapter ) {
-			return $this->error( 'no_backend', 'No backend is configured.', 400 );
-		}
-
+		$plugin     = Plugin::instance();
 		$product_id = (int) ( $request['product_id'] ?? 0 );
 		if ( 0 === $product_id ) {
 			return $this->error( 'missing_product', 'product_id is required.', 400 );
@@ -290,55 +269,122 @@ final class RestController {
 			return $this->error( 'no_platforms', 'At least one platform is required.', 400 );
 		}
 
-		$post_type    = $this->coerce_post_type( $request['post_type'] ?? PostPayload::TYPE_DRAFT );
+		$context = $plugin->product_context_builder()->build( $product_id );
+		if ( null === $context ) {
+			return $this->error( 'product_not_found', 'Product not found.', 404 );
+		}
+
 		$scheduled_at = isset( $request['scheduled_at'] ) ? (string) $request['scheduled_at'] : null;
+		$registry     = $plugin->publisher_registry();
+		$repo         = $plugin->job_repository();
 
-		$integration_map = $this->coerce_integration_map(
-			$plugin->settings()->get( 'backend.postiz.integration_map', array() )
-		);
-
-		$payload = new PostPayload(
-			$product_id,
-			$platforms,
-			$drafts_raw,
-			$integration_map,
-			array(),
-			$post_type,
-			$scheduled_at
-		);
-
-		$repo   = $plugin->job_repository();
 		$job_id = $repo->create(
 			$product_id,
 			get_current_user_id(),
-			$adapter->get_adapter_id(),
+			'multi',
 			$platforms,
 			$drafts_raw
 		);
 
-		try {
-			$result = $adapter->queue_post( $payload );
-			$repo->update_status( $job_id, $result->status, $result->backend_post_id, $result->platform_results );
+		$platform_results = array();
+		$success_count    = 0;
+		$failure_count    = 0;
+
+		foreach ( $platforms as $platform ) {
+			$draft = $drafts_raw[ $platform ] ?? null;
+			if ( ! is_array( $draft ) ) {
+				$platform_results[ $platform ] = array(
+					'success'       => false,
+					'platform'      => $platform,
+					'error_message' => 'No draft was provided for this platform.',
+				);
+				++$failure_count;
+				continue;
+			}
+
+			$publisher = $registry->get( $platform );
+			if ( null === $publisher ) {
+				$platform_results[ $platform ] = array(
+					'success'       => false,
+					'platform'      => $platform,
+					'error_message' => sprintf( 'No publisher implementation is available yet for "%s".', $platform ),
+				);
+				++$failure_count;
+				continue;
+			}
+
+			if ( ! $publisher->is_configured() ) {
+				$platform_results[ $platform ] = array(
+					'success'       => false,
+					'platform'      => $platform,
+					'error_message' => sprintf( '%s is not connected. Configure it in Settings → Apex Cast.', $platform ),
+				);
+				++$failure_count;
+				continue;
+			}
+
+			$hashtags = ( isset( $draft['hashtags'] ) && is_array( $draft['hashtags'] ) )
+				? array_values( array_map( 'strval', $draft['hashtags'] ) )
+				: array();
+
+			$publish_request = new PublishRequest(
+				$product_id,
+				$platform,
+				(string) ( $draft['content'] ?? '' ),
+				$hashtags,
+				$context->permalink,
+				$context->featured_image,
+				$scheduled_at
+			);
+
+			try {
+				$result                        = $publisher->publish( $publish_request );
+				$platform_results[ $platform ] = $result->to_array();
+				if ( $result->success ) {
+					++$success_count;
+				} else {
+					++$failure_count;
+				}
+			} catch ( PublisherException $e ) {
+				$plugin->logger()->error(
+					'rest.send',
+					$e->getMessage(),
+					array(
+						'product_id' => $product_id,
+						'platform'   => $platform,
+					),
+					$job_id
+				);
+				$platform_results[ $platform ] = array(
+					'success'       => false,
+					'platform'      => $platform,
+					'error_message' => $e->getMessage(),
+				);
+				++$failure_count;
+			}
+		}
+
+		$status = 'failed';
+		if ( $success_count > 0 && 0 === $failure_count ) {
+			$status = 'sent';
+		} elseif ( $success_count > 0 && $failure_count > 0 ) {
+			$status = 'partial';
+		}
+
+		$repo->update_status( $job_id, $status, '', $platform_results );
+
+		if ( $success_count > 0 ) {
 			update_post_meta( $product_id, '_apex_cast_last_sent_at', time() );
 			update_post_meta( $product_id, '_apex_cast_last_job_id', $job_id );
-
-			return $this->ok(
-				array(
-					'job_id'          => $job_id,
-					'status'          => $result->status,
-					'backend_post_id' => $result->backend_post_id,
-				)
-			);
-		} catch ( BackendAdapterException $e ) {
-			$repo->update_status( $job_id, 'failed' );
-			$plugin->logger()->error(
-				'rest.send',
-				$e->getMessage(),
-				array( 'product_id' => $product_id ),
-				$job_id
-			);
-			return $this->error( 'backend_failed', $e->getMessage(), 502 );
 		}
+
+		return $this->ok(
+			array(
+				'job_id'           => $job_id,
+				'status'           => $status,
+				'platform_results' => $platform_results,
+			)
+		);
 	}
 
 	/**
@@ -372,15 +418,20 @@ final class RestController {
 	}
 
 	/**
-	 * POST /test-connection — ping the configured provider/adapter.
+	 * POST /test-connection — ping the AI provider or a specific platform publisher.
+	 *
+	 * Accepts a `target` field:
+	 *   - "ai" tests the active AI provider
+	 *   - "facebook" / "instagram" / "pinterest" / "x" / "reddit" tests that platform's publisher
 	 *
 	 * @param WP_REST_Request $request REST request.
 	 * @return WP_REST_Response
 	 */
 	public function test_connection( WP_REST_Request $request ): WP_REST_Response {
-		$which = (string) ( $request['provider_type'] ?? 'ai' );
+		$raw_target = $request['target'] ?? $request['provider_type'] ?? 'ai';
+		$target     = sanitize_key( (string) $raw_target );
 
-		if ( 'ai' === $which ) {
+		if ( 'ai' === $target ) {
 			$provider = Plugin::instance()->ai_provider();
 			if ( null === $provider ) {
 				return $this->error( 'not_configured', 'AI provider is not configured.', 400 );
@@ -388,37 +439,16 @@ final class RestController {
 			return $this->ok( $provider->test_connection()->to_array() );
 		}
 
-		if ( 'backend' === $which ) {
-			$adapter = Plugin::instance()->backend_adapter();
-			if ( null === $adapter ) {
-				return $this->error( 'not_configured', 'Backend is not configured.', 400 );
-			}
-			return $this->ok( $adapter->test_connection()->to_array() );
+		$publisher = Plugin::instance()->publisher_registry()->get( $target );
+		if ( null === $publisher ) {
+			return $this->error(
+				'unknown_target',
+				sprintf( 'No publisher is available yet for "%s".', $target ),
+				400
+			);
 		}
 
-		return $this->error( 'invalid_type', 'provider_type must be "ai" or "backend".', 400 );
-	}
-
-	/**
-	 * GET /integrations — proxy the backend's connected channels.
-	 *
-	 * @return WP_REST_Response
-	 */
-	public function integrations(): WP_REST_Response {
-		$adapter = Plugin::instance()->backend_adapter();
-		if ( null === $adapter ) {
-			return $this->error( 'not_configured', 'Backend is not configured.', 400 );
-		}
-		try {
-			$list    = $adapter->fetch_integrations();
-			$payload = array();
-			foreach ( $list as $info ) {
-				$payload[] = $info->to_array();
-			}
-			return $this->ok( array( 'integrations' => $payload ) );
-		} catch ( BackendAdapterException $e ) {
-			return $this->error( 'backend_failed', $e->getMessage(), 502 );
-		}
+		return $this->ok( $publisher->test_connection()->to_array() );
 	}
 
 	/**
@@ -460,20 +490,6 @@ final class RestController {
 	}
 
 	/**
-	 * POST /webhook/:adapter — endpoint for backend status callbacks.
-	 *
-	 * Stub for v0.1: signature validation and payload routing arrive in v0.2.
-	 * Returning 200 keeps Postiz from retrying needlessly during initial setup.
-	 *
-	 * @param WP_REST_Request $request REST request.
-	 * @return WP_REST_Response
-	 */
-	public function webhook( WP_REST_Request $request ): WP_REST_Response {
-		unset( $request );
-		return $this->ok( array( 'received' => true ) );
-	}
-
-	/**
 	 * Strip encrypted-secret fields from a settings tree for safe transport to the browser.
 	 *
 	 * @param array<string, mixed> $settings Full settings tree.
@@ -481,16 +497,40 @@ final class RestController {
 	 */
 	private function redact_secrets( array $settings ): array {
 		if ( isset( $settings['ai_provider']['anthropic'] ) && is_array( $settings['ai_provider']['anthropic'] ) ) {
-			$encrypted = $settings['ai_provider']['anthropic']['api_key_encrypted'] ?? '';
-			$settings['ai_provider']['anthropic']['api_key_set'] = is_string( $encrypted ) && '' !== $encrypted;
-			unset( $settings['ai_provider']['anthropic']['api_key_encrypted'] );
+			$settings['ai_provider']['anthropic'] = $this->redact_section( $settings['ai_provider']['anthropic'] );
 		}
-		if ( isset( $settings['backend']['postiz'] ) && is_array( $settings['backend']['postiz'] ) ) {
-			$encrypted                                    = $settings['backend']['postiz']['api_key_encrypted'] ?? '';
-			$settings['backend']['postiz']['api_key_set'] = is_string( $encrypted ) && '' !== $encrypted;
-			unset( $settings['backend']['postiz']['api_key_encrypted'] );
+
+		if ( isset( $settings['platforms'] ) && is_array( $settings['platforms'] ) ) {
+			foreach ( $settings['platforms'] as $platform_id => $platform_config ) {
+				if ( is_array( $platform_config ) ) {
+					$settings['platforms'][ $platform_id ] = $this->redact_section( $platform_config );
+				}
+			}
 		}
+
 		return $settings;
+	}
+
+	/**
+	 * Redact a single settings sub-array: any field ending in `_encrypted` is
+	 * replaced with a `_set` boolean indicating whether it's populated.
+	 *
+	 * @param array<string, mixed> $section Sub-array to redact in place.
+	 * @return array<string, mixed>
+	 */
+	private function redact_section( array $section ): array {
+		foreach ( $section as $key => $value ) {
+			if ( ! is_string( $key ) ) {
+				continue;
+			}
+			if ( '_encrypted' !== substr( $key, -10 ) ) {
+				continue;
+			}
+			$base                      = substr( $key, 0, -10 );
+			$section[ $base . '_set' ] = is_string( $value ) && '' !== $value;
+			unset( $section[ $key ] );
+		}
+		return $section;
 	}
 
 	/**
@@ -564,28 +604,50 @@ final class RestController {
 			}
 		}
 
-		if ( isset( $incoming['backend']['postiz'] ) && is_array( $incoming['backend']['postiz'] ) ) {
-			$p = $incoming['backend']['postiz'];
-			if ( isset( $p['api_key'] ) && is_string( $p['api_key'] ) && '' !== $p['api_key'] ) {
-				$out['backend']['postiz']['api_key_encrypted'] = $store->encrypt_secret( $p['api_key'] );
-			}
-			if ( isset( $p['api_url'] ) ) {
-				$out['backend']['postiz']['api_url'] = esc_url_raw( (string) $p['api_url'] );
-			}
-			if ( isset( $p['default_post_type'] ) ) {
-				$type = (string) $p['default_post_type'];
-				if ( in_array( $type, array( 'now', 'schedule', 'draft' ), true ) ) {
-					$out['backend']['postiz']['default_post_type'] = $type;
+		if ( isset( $incoming['platforms'] ) && is_array( $incoming['platforms'] ) ) {
+			foreach ( $incoming['platforms'] as $platform_id => $platform_in ) {
+				if ( ! is_string( $platform_id ) || ! is_array( $platform_in ) ) {
+					continue;
 				}
-			}
-			if ( isset( $p['integration_map'] ) && is_array( $p['integration_map'] ) ) {
-				$map = array();
-				foreach ( $p['integration_map'] as $platform => $integration_id ) {
-					if ( is_string( $platform ) && is_string( $integration_id ) ) {
-						$map[ sanitize_key( $platform ) ] = sanitize_text_field( $integration_id );
+				$platform_id = sanitize_key( $platform_id );
+
+				if ( ! isset( $out['platforms'][ $platform_id ] ) || ! is_array( $out['platforms'][ $platform_id ] ) ) {
+					$out['platforms'][ $platform_id ] = array();
+				}
+
+				foreach ( $platform_in as $key => $value ) {
+					if ( ! is_string( $key ) ) {
+						continue;
+					}
+
+					// Read-only redacted fields the client may have echoed back.
+					if ( '_set' === substr( $key, -4 ) ) {
+						continue;
+					}
+
+					$encrypted_key        = $key . '_encrypted';
+					$has_encrypted_target = array_key_exists( $encrypted_key, $out['platforms'][ $platform_id ] );
+
+					// Secrets: client sends plaintext under the bare name; we encrypt to *_encrypted.
+					if ( $has_encrypted_target ) {
+						if ( is_string( $value ) && '' !== $value ) {
+							$out['platforms'][ $platform_id ][ $encrypted_key ] = $store->encrypt_secret( $value );
+						} elseif ( null === $value ) {
+							$out['platforms'][ $platform_id ][ $encrypted_key ] = '';
+						}
+						// Empty string = "no change" — preserve existing ciphertext.
+						continue;
+					}
+
+					// Non-secret scalar fields: sanitize and store.
+					if ( is_string( $value ) ) {
+						$out['platforms'][ $platform_id ][ $key ] = sanitize_text_field( $value );
+					} elseif ( is_int( $value ) || is_bool( $value ) ) {
+						$out['platforms'][ $platform_id ][ $key ] = $value;
+					} elseif ( is_array( $value ) ) {
+						$out['platforms'][ $platform_id ][ $key ] = $value;
 					}
 				}
-				$out['backend']['postiz']['integration_map'] = $map;
 			}
 		}
 
@@ -610,39 +672,6 @@ final class RestController {
 			}
 		}
 		return array_values( array_unique( $cleaned ) );
-	}
-
-	/**
-	 * Coerce a post_type input to a known constant.
-	 *
-	 * @param mixed $raw User-supplied post_type input.
-	 * @return string One of PostPayload::TYPE_*.
-	 */
-	private function coerce_post_type( mixed $raw ): string {
-		$value = is_string( $raw ) ? $raw : PostPayload::TYPE_DRAFT;
-		if ( ! in_array( $value, array( PostPayload::TYPE_NOW, PostPayload::TYPE_SCHEDULE, PostPayload::TYPE_DRAFT ), true ) ) {
-			return PostPayload::TYPE_DRAFT;
-		}
-		return $value;
-	}
-
-	/**
-	 * Coerce the stored integration map to `array<string, string>`.
-	 *
-	 * @param mixed $raw Stored value from settings.
-	 * @return array<string, string>
-	 */
-	private function coerce_integration_map( mixed $raw ): array {
-		if ( ! is_array( $raw ) ) {
-			return array();
-		}
-		$out = array();
-		foreach ( $raw as $platform => $integration_id ) {
-			if ( is_string( $platform ) && is_string( $integration_id ) ) {
-				$out[ $platform ] = $integration_id;
-			}
-		}
-		return $out;
 	}
 
 	/**

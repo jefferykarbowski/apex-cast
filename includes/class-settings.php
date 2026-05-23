@@ -128,11 +128,11 @@ final class Settings {
 	 */
 	public static function defaults(): array {
 		return array(
-			'version'     => 1,
+			'version'     => 2,
 			'store'       => array(
 				'name'              => '',
 				'description'       => '',
-				'default_platforms' => array( 'facebook', 'instagram', 'x' ),
+				'default_platforms' => array( 'facebook', 'instagram', 'pinterest' ),
 			),
 			'brand_voice' => array(
 				'tone'             => '',
@@ -148,13 +148,30 @@ final class Settings {
 					'max_tokens'        => 1024,
 				),
 			),
-			'backend'     => array(
-				'active' => 'postiz',
-				'postiz' => array(
-					'api_key_encrypted' => '',
-					'api_url'           => 'https://api.postiz.com/public/v1',
-					'default_post_type' => 'draft',
-					'integration_map'   => array(),
+			// Per-platform publisher configuration. Each platform's substructure is
+			// owned by its publisher class (Phase 5+); the keys present here are the
+			// minimum a fresh install needs so the settings UI has something to bind to.
+			'platforms'   => array(
+				'facebook'  => array(
+					'page_id'                     => '',
+					'page_access_token_encrypted' => '',
+				),
+				'instagram' => array(
+					'ig_business_account_id'      => '',
+					'page_access_token_encrypted' => '',
+				),
+				'pinterest' => array(
+					'access_token_encrypted' => '',
+					'board_id'               => '',
+				),
+				'x'         => array(
+					'access_token_encrypted'        => '',
+					'access_token_secret_encrypted' => '',
+				),
+				'reddit'    => array(
+					'access_token_encrypted'  => '',
+					'refresh_token_encrypted' => '',
+					'subreddit'               => '',
 				),
 			),
 		);

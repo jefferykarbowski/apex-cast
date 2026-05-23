@@ -135,23 +135,22 @@ final class Admin {
 		$defaults_raw = Plugin::instance()->settings()->get( 'store.default_platforms', array() );
 		$defaults     = is_array( $defaults_raw ) ? array_values( array_filter( array_map( 'strval', $defaults_raw ) ) ) : array();
 
-		$integration_map_raw = Plugin::instance()->settings()->get( 'backend.postiz.integration_map', array() );
-		$integration_map     = is_array( $integration_map_raw ) ? $integration_map_raw : array();
+		$configured_platforms = Plugin::instance()->publisher_registry()->configured_platforms();
 
 		$this->enqueue_entry( 'metabox', $base_path, $base_url );
 		wp_localize_script(
 			'apex-cast-metabox',
 			'APEX_CAST_DATA',
 			array(
-				'restUrl'            => esc_url_raw( rest_url( 'apex-cast/v1' ) ),
-				'nonce'              => wp_create_nonce( 'wp_rest' ),
-				'productId'          => $product_id,
-				'initialDrafts'      => $drafts,
-				'lastSentAt'         => $last_sent_at,
-				'lastJobId'          => $last_job_id,
-				'defaultPlatforms'   => $defaults,
-				'integrationMap'     => $integration_map,
-				'supportedPlatforms' => AnthropicProvider::SUPPORTED_PLATFORMS,
+				'restUrl'             => esc_url_raw( rest_url( 'apex-cast/v1' ) ),
+				'nonce'               => wp_create_nonce( 'wp_rest' ),
+				'productId'           => $product_id,
+				'initialDrafts'       => $drafts,
+				'lastSentAt'          => $last_sent_at,
+				'lastJobId'           => $last_job_id,
+				'defaultPlatforms'    => $defaults,
+				'configuredPlatforms' => $configured_platforms,
+				'supportedPlatforms'  => AnthropicProvider::SUPPORTED_PLATFORMS,
 			)
 		);
 	}

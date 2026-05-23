@@ -1,28 +1,31 @@
 /**
  * Settings page React app — one screen, tabbed sections, REST-backed save.
- *
- * @package
  */
 
 import { useEffect, useState, useCallback } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 
-import {
-	getSettings,
-	saveSettings,
-	testConnection,
-	fetchIntegrations,
-} from './api';
+import { getSettings, saveSettings, testConnection } from './api';
 
 const TABS = [
 	{ key: 'general', label: 'General' },
 	{ key: 'voice', label: 'Brand voice' },
 	{ key: 'ai', label: 'AI provider' },
-	{ key: 'backend', label: 'Backend' },
+	{ key: 'platforms', label: 'Platforms' },
 ];
 
 const HASHTAG_STRATEGIES = ['sparse', 'moderate', 'heavy'];
-const POST_TYPES = ['now', 'schedule', 'draft'];
+
+// The full set of platforms the AI provider can generate for. Each row in the
+// Platforms tab reflects the state of one of these. Order matches what the
+// metabox shows.
+const PLATFORMS = [
+	{ id: 'facebook', label: 'Facebook' },
+	{ id: 'instagram', label: 'Instagram' },
+	{ id: 'pinterest', label: 'Pinterest' },
+	{ id: 'x', label: 'X' },
+	{ id: 'reddit', label: 'Reddit' },
+];
 
 /**
  * Deep-clone a JSON-shaped settings tree (no functions, no cycles).
@@ -57,6 +60,24 @@ function setPath(settings, path, value) {
 }
 
 /**
+ * Heuristic: does any encrypted-secret field exist under this platform's settings?
+ * The server redacts every `*_encrypted` into a `*_set` boolean before sending
+ * the tree to the browser; if any of those booleans are true, the platform has
+ * usable credentials saved.
+ *
+ * @param {Object} platformSettings Per-platform sub-tree from settings.
+ * @return {boolean} True if any redacted secret field is populated.
+ */
+function hasAnySecret(platformSettings) {
+	if (!platformSettings || typeof platformSettings !== 'object') {
+		return false;
+	}
+	return Object.keys(platformSettings).some(
+		(k) => k.endsWith('_set') && platformSettings[k] === true
+	);
+}
+
+/**
  * Main settings app.
  *
  * @param {Object} props
@@ -64,20 +85,17 @@ function setPath(settings, path, value) {
  * @return {Element} React element.
  */
 export default function SettingsApp({ bootstrapData }) {
-	const platforms = bootstrapData.platforms || [];
-
 	const [tab, setTab] = useState('general');
 	const [settings, setSettings] = useState(null);
-	const [pendingKeys, setPendingKeys] = useState({
-		anthropic: '',
-		postiz: '',
-	});
+	const [pendingKeys, setPendingKeys] = useState({ anthropic: '' });
 	const [saving, setSaving] = useState(false);
 	const [savedAt, setSavedAt] = useState(null);
 	const [error, setError] = useState(null);
 	const [testResult, setTestResult] = useState({});
-	const [integrations, setIntegrations] = useState([]);
 	const [newAvoid, setNewAvoid] = useState('');
+
+	// Reserved for future per-platform connect flows; consumed by the heuristic above.
+	void bootstrapData;
 
 	useEffect(() => {
 		getSettings()
@@ -103,22 +121,14 @@ export default function SettingsApp({ bootstrapData }) {
 			body.ai_provider.anthropic = body.ai_provider.anthropic || {};
 			body.ai_provider.anthropic.api_key = pendingKeys.anthropic;
 		}
-		if (pendingKeys.postiz) {
-			body.backend = body.backend || {};
-			body.backend.postiz = body.backend.postiz || {};
-			body.backend.postiz.api_key = pendingKeys.postiz;
-		}
 		if (body.ai_provider?.anthropic) {
 			delete body.ai_provider.anthropic.api_key_set;
-		}
-		if (body.backend?.postiz) {
-			delete body.backend.postiz.api_key_set;
 		}
 
 		try {
 			const updated = await saveSettings(body);
 			setSettings(updated);
-			setPendingKeys({ anthropic: '', postiz: '' });
+			setPendingKeys({ anthropic: '' });
 			setSavedAt(Date.now());
 		} catch (e) {
 			setError(e.message);
@@ -126,28 +136,19 @@ export default function SettingsApp({ bootstrapData }) {
 		setSaving(false);
 	}, [settings, pendingKeys]);
 
-	const runTest = useCallback(async (which) => {
+	const runTest = useCallback(async (target) => {
 		setTestResult((prev) => ({
 			...prev,
-			[which]: { loading: true },
+			[target]: { loading: true },
 		}));
 		try {
-			const result = await testConnection(which);
-			setTestResult((prev) => ({ ...prev, [which]: result }));
+			const result = await testConnection(target);
+			setTestResult((prev) => ({ ...prev, [target]: result }));
 		} catch (e) {
 			setTestResult((prev) => ({
 				...prev,
-				[which]: { success: false, message: e.message },
+				[target]: { success: false, message: e.message },
 			}));
-		}
-	}, []);
-
-	const loadIntegrations = useCallback(async () => {
-		try {
-			const result = await fetchIntegrations();
-			setIntegrations(result.integrations || []);
-		} catch (e) {
-			setError(e.message);
 		}
 	}, []);
 
@@ -520,182 +521,47 @@ export default function SettingsApp({ bootstrapData }) {
 				</table>
 			)}
 
-			{tab === 'backend' && (
+			{tab === 'platforms' && (
 				<>
+					<p className="description">
+						{__(
+							'Each platform has its own connection flow. Pinterest, X, and Reddit work with personal accounts; Facebook + Instagram require a Page + Creator account. Connection UI lands per-platform in upcoming phases.',
+							'apex-cast'
+						)}
+					</p>
 					<table className="form-table">
 						<tbody>
-							<tr>
-								<th>
-									<label htmlFor="apex-cast-postiz-key">
-										{__('Postiz API key', 'apex-cast')}
-									</label>
-								</th>
-								<td>
-									<input
-										id="apex-cast-postiz-key"
-										type="password"
-										className="regular-text"
-										placeholder={
-											settings.backend?.postiz
-												?.api_key_set
-												? __(
-														'•••••••• (saved)',
-														'apex-cast'
-													)
-												: __(
-														'Postiz API key',
-														'apex-cast'
-													)
-										}
-										value={pendingKeys.postiz}
-										onChange={(e) =>
-											setPendingKeys({
-												...pendingKeys,
-												postiz: e.target.value,
-											})
-										}
-									/>
-									<p className="description">
-										{__(
-											'Leave blank to keep the existing key.',
-											'apex-cast'
-										)}
-									</p>
-								</td>
-							</tr>
-							<tr>
-								<th>
-									<label htmlFor="apex-cast-postiz-url">
-										{__('API URL', 'apex-cast')}
-									</label>
-								</th>
-								<td>
-									<input
-										id="apex-cast-postiz-url"
-										type="text"
-										className="regular-text"
-										value={
-											settings.backend?.postiz?.api_url ||
-											''
-										}
-										onChange={(e) =>
-											update(
-												'backend.postiz.api_url',
-												e.target.value
-											)
-										}
-									/>
-								</td>
-							</tr>
-							<tr>
-								<th>
-									<label htmlFor="apex-cast-postiz-post-type">
-										{__('Default post type', 'apex-cast')}
-									</label>
-								</th>
-								<td>
-									<select
-										id="apex-cast-postiz-post-type"
-										value={
-											settings.backend?.postiz
-												?.default_post_type || 'draft'
-										}
-										onChange={(e) =>
-											update(
-												'backend.postiz.default_post_type',
-												e.target.value
-											)
-										}
-									>
-										{POST_TYPES.map((type) => (
-											<option key={type} value={type}>
-												{type}
-											</option>
-										))}
-									</select>
-								</td>
-							</tr>
-							<tr>
-								<th />
-								<td>
-									<button
-										type="button"
-										className="button"
-										onClick={() => runTest('backend')}
-									>
-										{__('Test connection', 'apex-cast')}
-									</button>
-									{renderTestResult('backend')}{' '}
-									<button
-										type="button"
-										className="button"
-										onClick={loadIntegrations}
-									>
-										{__('Load integrations', 'apex-cast')}
-									</button>
-								</td>
-							</tr>
+							{PLATFORMS.map((p) => {
+								const configured = hasAnySecret(
+									settings.platforms?.[p.id]
+								);
+								return (
+									<tr key={p.id}>
+										<th>{p.label}</th>
+										<td>
+											<span
+												className={`apex-cast-test-result ${
+													configured
+														? 'success'
+														: 'failure'
+												}`}
+											>
+												{configured
+													? __(
+															'Connected',
+															'apex-cast'
+														)
+													: __(
+															'Not yet implemented — coming in a later phase.',
+															'apex-cast'
+														)}
+											</span>
+										</td>
+									</tr>
+								);
+							})}
 						</tbody>
 					</table>
-
-					{integrations.length > 0 && (
-						<>
-							<h3>
-								{__(
-									'Platform → integration mapping',
-									'apex-cast'
-								)}
-							</h3>
-							<table className="form-table">
-								<tbody>
-									{platforms.map((platform) => (
-										<tr key={platform}>
-											<th>{platform}</th>
-											<td>
-												<select
-													value={
-														settings.backend?.postiz
-															?.integration_map?.[
-															platform
-														] || ''
-													}
-													onChange={(e) =>
-														update(
-															`backend.postiz.integration_map.${platform}`,
-															e.target.value
-														)
-													}
-												>
-													<option value="">
-														—{' '}
-														{__(
-															'Not configured',
-															'apex-cast'
-														)}{' '}
-														—
-													</option>
-													{integrations
-														.filter(
-															(i) =>
-																i.platform ===
-																platform
-														)
-														.map((i) => (
-															<option
-																key={i.id}
-																value={i.id}
-															>
-																{i.name || i.id}
-															</option>
-														))}
-												</select>
-											</td>
-										</tr>
-									))}
-								</tbody>
-							</table>
-						</>
-					)}
 				</>
 			)}
 

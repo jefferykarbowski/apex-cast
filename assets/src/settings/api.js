@@ -61,12 +61,8 @@ export function saveSettings(body) {
 	return request('POST', '/settings', body);
 }
 
-export function testConnection(providerType) {
+export function testConnection(target) {
 	return request('POST', '/test-connection', {
-		provider_type: providerType,
+		target,
 	});
-}
-
-export function fetchIntegrations() {
-	return request('GET', '/integrations');
 }

@@ -13,18 +13,15 @@ use ApexChute\ApexCast\AI\AIProviderException;
 use ApexChute\ApexCast\AI\BrandVoice;
 use ApexChute\ApexCast\AI\GenerationResult;
 use ApexChute\ApexCast\AI\ProductContext;
-use ApexChute\ApexCast\Adapters\BackendAdapterException;
-use ApexChute\ApexCast\Adapters\IntegrationInfo;
-use ApexChute\ApexCast\Adapters\MediaRef;
-use ApexChute\ApexCast\Adapters\PostPayload;
-use ApexChute\ApexCast\Adapters\PostStatus;
-use ApexChute\ApexCast\Adapters\QueueResult;
+use ApexChute\ApexCast\Publishers\PublishRequest;
+use ApexChute\ApexCast\Publishers\PublishResult;
+use ApexChute\ApexCast\Publishers\PublisherException;
 use ApexChute\ApexCast\Support\TestConnectionResult;
 use PHPUnit\Framework\TestCase;
 
 /**
  * Behavioural tests for the immutable DTOs exchanged between the AI provider,
- * the backend adapter, and the REST layer.
+ * the publisher implementations, and the REST layer.
  */
 final class Value_Objects_Test extends TestCase {
 
@@ -129,52 +126,60 @@ final class Value_Objects_Test extends TestCase {
 		$this->assertSame( array( 'success', 'message', 'details' ), array_keys( $array ) );
 	}
 
-	public function test_integration_info_to_array_includes_picture(): void {
-		$info = new IntegrationInfo( 'int_1', 'Apex on FB', 'facebook', 'https://example.com/p.png' );
-		$this->assertSame(
-			array(
-				'id'       => 'int_1',
-				'name'     => 'Apex on FB',
-				'platform' => 'facebook',
-				'picture'  => 'https://example.com/p.png',
-			),
-			$info->to_array()
-		);
-	}
-
-	public function test_media_ref_to_array(): void {
-		$ref = new MediaRef( 'media_42', '/uploads/apex.jpg' );
-		$this->assertSame( array( 'id' => 'media_42', 'path' => '/uploads/apex.jpg' ), $ref->to_array() );
-	}
-
-	public function test_post_payload_defaults(): void {
-		$payload = new PostPayload(
+	public function test_publish_request_defaults(): void {
+		$req = new PublishRequest(
 			42,
-			array( 'facebook' ),
-			array( 'facebook' => array( 'content' => 'Hi.' ) ),
-			array( 'facebook' => 'int_1' )
+			'pinterest',
+			'A great chute.',
+			array( '#skydive', '#apexchute' ),
+			'https://apexchute.com/product/apex-chute-3-0',
+			'https://apexchute.com/wp-content/uploads/apex.jpg'
 		);
 
-		$this->assertSame( PostPayload::TYPE_DRAFT, $payload->post_type );
-		$this->assertNull( $payload->scheduled_at );
-		$this->assertSame( array(), $payload->media );
+		$this->assertSame( 42, $req->product_id );
+		$this->assertSame( 'pinterest', $req->platform );
+		$this->assertSame( 'A great chute.', $req->content );
+		$this->assertSame( array( '#skydive', '#apexchute' ), $req->hashtags );
+		$this->assertNull( $req->scheduled_at );
+		$this->assertSame( array(), $req->platform_options );
 	}
 
-	public function test_queue_result_to_array(): void {
-		$result = new QueueResult( 'grp_1', 'queued' );
+	public function test_publish_request_accepts_platform_options(): void {
+		$req = new PublishRequest(
+			1,
+			'reddit',
+			'Title',
+			array(),
+			'https://example.com',
+			'https://example.com/img.jpg',
+			null,
+			array( 'subreddit' => 'skydiving' )
+		);
+		$this->assertSame( 'skydiving', $req->platform_options['subreddit'] );
+	}
+
+	public function test_publish_result_success_factory(): void {
+		$result = PublishResult::success_for( 'pinterest', 'pin_42', 'https://pinterest.com/pin/42' );
+		$this->assertTrue( $result->success );
+		$this->assertSame( 'pin_42', $result->platform_post_id );
+		$this->assertSame( 'https://pinterest.com/pin/42', $result->platform_url );
+		$this->assertNull( $result->error_message );
+	}
+
+	public function test_publish_result_failure_factory(): void {
+		$result = PublishResult::failure_for( 'x', 'Rate limited.' );
+		$this->assertFalse( $result->success );
+		$this->assertSame( 'x', $result->platform );
+		$this->assertSame( 'Rate limited.', $result->error_message );
+		$this->assertSame( '', $result->platform_post_id );
+	}
+
+	public function test_publish_result_to_array_shape(): void {
+		$array = PublishResult::success_for( 'reddit', 'r_1', 'https://reddit.com/r/x/y' )->to_array();
 		$this->assertSame(
-			array(
-				'backend_post_id'  => 'grp_1',
-				'status'           => 'queued',
-				'platform_results' => array(),
-			),
-			$result->to_array()
+			array( 'success', 'platform', 'platform_post_id', 'platform_url', 'error_message', 'context' ),
+			array_keys( $array )
 		);
-	}
-
-	public function test_post_status_to_array(): void {
-		$status = new PostStatus( PostStatus::STATUS_SENT, array( 'facebook' => array( 'status' => 'sent' ) ) );
-		$this->assertSame( PostStatus::STATUS_SENT, $status->to_array()['status'] );
 	}
 
 	public function test_ai_provider_exception_factories_produce_distinct_messages(): void {
@@ -194,9 +199,12 @@ final class Value_Objects_Test extends TestCase {
 		$this->assertStringContainsString( '502', $messages[4] );
 	}
 
-	public function test_backend_adapter_exception_factories(): void {
-		$this->assertSame( 'The backend rejected the configured API key.', BackendAdapterException::auth_failed()->getMessage() );
-		$this->assertStringContainsString( '503', BackendAdapterException::http_error( 503 )->getMessage() );
-		$this->assertStringContainsString( 'detail', BackendAdapterException::malformed_response( 'detail' )->getMessage() );
+	public function test_publisher_exception_factories_embed_platform_and_status(): void {
+		$this->assertStringContainsString( 'pinterest', PublisherException::not_configured( 'pinterest' )->getMessage() );
+		$this->assertStringContainsString( 'reddit', PublisherException::auth_failed( 'reddit' )->getMessage() );
+		$this->assertStringContainsString( 'x', PublisherException::rate_limited( 'x' )->getMessage() );
+		$this->assertStringContainsString( 'facebook', PublisherException::http_error( 'facebook', 503 )->getMessage() );
+		$this->assertStringContainsString( '503', PublisherException::http_error( 'facebook', 503 )->getMessage() );
+		$this->assertStringContainsString( 'detail', PublisherException::malformed_response( 'instagram', 'detail' )->getMessage() );
 	}
 }

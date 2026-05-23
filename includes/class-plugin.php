@@ -10,7 +10,6 @@ declare( strict_types=1 );
 namespace ApexChute\ApexCast;
 
 use ApexChute\ApexCast\AI\AIProviderInterface;
-use ApexChute\ApexCast\Adapters\BackendAdapterInterface;
 use ApexChute\ApexCast\Admin\Admin;
 use ApexChute\ApexCast\Rest\RestController;
 
@@ -59,11 +58,13 @@ final class Plugin {
 	private ?ProviderFactory $provider_factory = null;
 
 	/**
-	 * Lazy backend adapter factory.
+	 * Lazy publisher registry. Owns the set of per-platform publishers
+	 * (Pinterest, X, Reddit, Facebook Page, Instagram). Empty until Phase 5+
+	 * lands real publishers — REST callers handle "no publisher" gracefully.
 	 *
-	 * @var AdapterFactory|null
+	 * @var PublisherRegistry|null
 	 */
-	private ?AdapterFactory $adapter_factory = null;
+	private ?PublisherRegistry $publisher_registry = null;
 
 	/**
 	 * Lazy product context builder.
@@ -187,15 +188,26 @@ final class Plugin {
 	}
 
 	/**
-	 * Build (or null) the currently-configured backend adapter.
+	 * Publisher registry accessor (lazy).
 	 *
-	 * @return BackendAdapterInterface|null
+	 * The registry is empty by default. Each phase that lands a new publisher
+	 * registers it here (or via the `apex_cast_register_publishers` filter,
+	 * which fires on first access).
+	 *
+	 * @return PublisherRegistry
 	 */
-	public function backend_adapter(): ?BackendAdapterInterface {
-		if ( null === $this->adapter_factory ) {
-			$this->adapter_factory = new AdapterFactory( $this->settings() );
+	public function publisher_registry(): PublisherRegistry {
+		if ( null === $this->publisher_registry ) {
+			$this->publisher_registry = new PublisherRegistry();
+			/**
+			 * Fires once per request when the registry is first built, giving
+			 * publishers a chance to register themselves.
+			 *
+			 * @param PublisherRegistry $registry The (still empty) registry.
+			 */
+			do_action( 'apex_cast_register_publishers', $this->publisher_registry );
 		}
-		return $this->adapter_factory->create();
+		return $this->publisher_registry;
 	}
 
 	/**
