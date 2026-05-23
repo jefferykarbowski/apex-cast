@@ -7,8 +7,8 @@
   "homepage": "https://github.com/jefferykarbowski/apex-cast",
   "author": "Apex Chute LLC",
   "scripts": {
-    "build": "wp-scripts build assets/src/metabox/index.jsx assets/src/settings/index.jsx --output-path=assets/build",
-    "start": "wp-scripts start assets/src/metabox/index.jsx assets/src/settings/index.jsx --output-path=assets/build",
+    "build": "wp-scripts build assets/src/metabox.jsx assets/src/settings.jsx --output-path=assets/build",
+    "start": "wp-scripts start assets/src/metabox.jsx assets/src/settings.jsx --output-path=assets/build",
     "lint": "wp-scripts lint-js assets/src",
     "lint:fix": "wp-scripts lint-js assets/src --fix",
     "format": "wp-scripts format assets/src",

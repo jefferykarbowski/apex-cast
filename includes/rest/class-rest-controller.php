@@ -130,6 +130,23 @@ final class RestController {
 
 		register_rest_route(
 			self::REST_NAMESPACE,
+			'/settings',
+			array(
+				array(
+					'methods'             => 'GET',
+					'callback'            => array( $this, 'get_settings' ),
+					'permission_callback' => $auth,
+				),
+				array(
+					'methods'             => 'POST',
+					'callback'            => array( $this, 'post_settings' ),
+					'permission_callback' => $auth,
+				),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
 			'/webhook/(?P<adapter>[a-z0-9_-]+)',
 			array(
 				'methods'             => 'POST',
@@ -405,6 +422,44 @@ final class RestController {
 	}
 
 	/**
+	 * GET /settings — return the current settings tree with secrets redacted.
+	 *
+	 * Encrypted API keys are replaced with a boolean `api_key_set` so the React
+	 * settings UI can show "configured" without ever seeing plaintext.
+	 *
+	 * @return WP_REST_Response
+	 */
+	public function get_settings(): WP_REST_Response {
+		$settings = Plugin::instance()->settings()->all();
+		return $this->ok( $this->redact_secrets( $settings ) );
+	}
+
+	/**
+	 * POST /settings — partial update of the settings tree.
+	 *
+	 * Accepts the same shape returned by GET /settings, plus optional plaintext
+	 * `api_key` fields under `ai_provider.anthropic` and `backend.postiz`. If an
+	 * `api_key` field is present and non-empty, it is encrypted and stored; if
+	 * absent or empty, the existing encrypted value is preserved.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @return WP_REST_Response
+	 */
+	public function post_settings( WP_REST_Request $request ): WP_REST_Response {
+		$incoming = $request->get_json_params();
+		if ( ! is_array( $incoming ) ) {
+			return $this->error( 'invalid_body', 'JSON body required.', 400 );
+		}
+
+		$store    = Plugin::instance()->settings();
+		$existing = $store->all();
+		$merged   = $this->merge_settings( $existing, $incoming );
+		$store->save( $merged );
+
+		return $this->ok( $this->redact_secrets( $merged ) );
+	}
+
+	/**
 	 * POST /webhook/:adapter — endpoint for backend status callbacks.
 	 *
 	 * Stub for v0.1: signature validation and payload routing arrive in v0.2.
@@ -416,6 +471,125 @@ final class RestController {
 	public function webhook( WP_REST_Request $request ): WP_REST_Response {
 		unset( $request );
 		return $this->ok( array( 'received' => true ) );
+	}
+
+	/**
+	 * Strip encrypted-secret fields from a settings tree for safe transport to the browser.
+	 *
+	 * @param array<string, mixed> $settings Full settings tree.
+	 * @return array<string, mixed>
+	 */
+	private function redact_secrets( array $settings ): array {
+		if ( isset( $settings['ai_provider']['anthropic'] ) && is_array( $settings['ai_provider']['anthropic'] ) ) {
+			$encrypted = $settings['ai_provider']['anthropic']['api_key_encrypted'] ?? '';
+			$settings['ai_provider']['anthropic']['api_key_set'] = is_string( $encrypted ) && '' !== $encrypted;
+			unset( $settings['ai_provider']['anthropic']['api_key_encrypted'] );
+		}
+		if ( isset( $settings['backend']['postiz'] ) && is_array( $settings['backend']['postiz'] ) ) {
+			$encrypted                                    = $settings['backend']['postiz']['api_key_encrypted'] ?? '';
+			$settings['backend']['postiz']['api_key_set'] = is_string( $encrypted ) && '' !== $encrypted;
+			unset( $settings['backend']['postiz']['api_key_encrypted'] );
+		}
+		return $settings;
+	}
+
+	/**
+	 * Apply an incoming settings patch on top of the existing tree, with sanitization
+	 * and (where applicable) encryption of plaintext API keys.
+	 *
+	 * @param array<string, mixed> $existing Currently stored settings.
+	 * @param array<string, mixed> $incoming Caller-supplied partial update.
+	 * @return array<string, mixed>
+	 */
+	private function merge_settings( array $existing, array $incoming ): array {
+		$store = Plugin::instance()->settings();
+		$out   = $existing;
+
+		if ( isset( $incoming['store'] ) && is_array( $incoming['store'] ) ) {
+			$store_in = $incoming['store'];
+			if ( isset( $store_in['name'] ) ) {
+				$out['store']['name'] = sanitize_text_field( (string) $store_in['name'] );
+			}
+			if ( isset( $store_in['description'] ) ) {
+				$out['store']['description'] = sanitize_textarea_field( (string) $store_in['description'] );
+			}
+			if ( isset( $store_in['default_platforms'] ) && is_array( $store_in['default_platforms'] ) ) {
+				$cleaned = array();
+				foreach ( $store_in['default_platforms'] as $value ) {
+					$slug = sanitize_key( (string) $value );
+					if ( '' !== $slug ) {
+						$cleaned[] = $slug;
+					}
+				}
+				$out['store']['default_platforms'] = array_values( array_unique( $cleaned ) );
+			}
+		}
+
+		if ( isset( $incoming['brand_voice'] ) && is_array( $incoming['brand_voice'] ) ) {
+			$bv = $incoming['brand_voice'];
+			if ( isset( $bv['tone'] ) ) {
+				$out['brand_voice']['tone'] = sanitize_text_field( (string) $bv['tone'] );
+			}
+			if ( isset( $bv['voice_notes'] ) ) {
+				$out['brand_voice']['voice_notes'] = sanitize_textarea_field( (string) $bv['voice_notes'] );
+			}
+			if ( isset( $bv['hashtag_strategy'] ) ) {
+				$strategy = (string) $bv['hashtag_strategy'];
+				if ( in_array( $strategy, array( 'sparse', 'moderate', 'heavy' ), true ) ) {
+					$out['brand_voice']['hashtag_strategy'] = $strategy;
+				}
+			}
+			if ( isset( $bv['do_not_use'] ) && is_array( $bv['do_not_use'] ) ) {
+				$cleaned = array();
+				foreach ( $bv['do_not_use'] as $value ) {
+					$item = sanitize_text_field( (string) $value );
+					if ( '' !== $item ) {
+						$cleaned[] = $item;
+					}
+				}
+				$out['brand_voice']['do_not_use'] = array_values( $cleaned );
+			}
+		}
+
+		if ( isset( $incoming['ai_provider']['anthropic'] ) && is_array( $incoming['ai_provider']['anthropic'] ) ) {
+			$an = $incoming['ai_provider']['anthropic'];
+			if ( isset( $an['api_key'] ) && is_string( $an['api_key'] ) && '' !== $an['api_key'] ) {
+				$out['ai_provider']['anthropic']['api_key_encrypted'] = $store->encrypt_secret( $an['api_key'] );
+			}
+			if ( isset( $an['model'] ) ) {
+				$out['ai_provider']['anthropic']['model'] = sanitize_text_field( (string) $an['model'] );
+			}
+			if ( isset( $an['max_tokens'] ) ) {
+				$out['ai_provider']['anthropic']['max_tokens'] = max( 1, (int) $an['max_tokens'] );
+			}
+		}
+
+		if ( isset( $incoming['backend']['postiz'] ) && is_array( $incoming['backend']['postiz'] ) ) {
+			$p = $incoming['backend']['postiz'];
+			if ( isset( $p['api_key'] ) && is_string( $p['api_key'] ) && '' !== $p['api_key'] ) {
+				$out['backend']['postiz']['api_key_encrypted'] = $store->encrypt_secret( $p['api_key'] );
+			}
+			if ( isset( $p['api_url'] ) ) {
+				$out['backend']['postiz']['api_url'] = esc_url_raw( (string) $p['api_url'] );
+			}
+			if ( isset( $p['default_post_type'] ) ) {
+				$type = (string) $p['default_post_type'];
+				if ( in_array( $type, array( 'now', 'schedule', 'draft' ), true ) ) {
+					$out['backend']['postiz']['default_post_type'] = $type;
+				}
+			}
+			if ( isset( $p['integration_map'] ) && is_array( $p['integration_map'] ) ) {
+				$map = array();
+				foreach ( $p['integration_map'] as $platform => $integration_id ) {
+					if ( is_string( $platform ) && is_string( $integration_id ) ) {
+						$map[ sanitize_key( $platform ) ] = sanitize_text_field( $integration_id );
+					}
+				}
+				$out['backend']['postiz']['integration_map'] = $map;
+			}
+		}
+
+		return $out;
 	}
 
 	/**

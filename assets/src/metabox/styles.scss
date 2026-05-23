@@ -1,0 +1,115 @@
+/**
+ * Apex Cast metabox styles.
+ */
+
+.apex-cast-metabox {
+	font-size: 13px;
+
+	.apex-cast-platforms {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 4px 12px;
+		margin: 0 0 12px;
+		padding: 0;
+		border: 0;
+	}
+
+	.apex-cast-platform-option {
+		display: block;
+		cursor: pointer;
+	}
+
+	.apex-cast-generate {
+		width: 100%;
+		margin-bottom: 12px;
+	}
+
+	.apex-cast-error {
+		margin: 8px 0;
+	}
+
+	.apex-cast-notes {
+		font-size: 12px;
+		color: #50575e;
+		margin: 8px 0;
+	}
+
+	.apex-cast-platform-card {
+		margin: 8px 0;
+		padding: 8px;
+		border: 1px solid #dcdcde;
+		border-radius: 4px;
+		background: #fff;
+
+		&.over-limit {
+			border-color: #d63638;
+		}
+
+		textarea {
+			width: 100%;
+			font-family: inherit;
+		}
+	}
+
+	.apex-cast-platform-card-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 4px;
+		font-size: 12px;
+	}
+
+	.apex-cast-char-count {
+		color: #50575e;
+
+		&.over {
+			color: #d63638;
+			font-weight: 600;
+		}
+	}
+
+	.apex-cast-hashtags {
+		margin-top: 6px;
+	}
+
+	.apex-cast-hashtag {
+		display: inline-block;
+		margin: 0 4px 4px 0;
+		padding: 1px 6px;
+		background: #f0f0f1;
+		border-radius: 2px;
+		font-size: 11px;
+	}
+
+	.apex-cast-send-bar {
+		margin-top: 12px;
+		padding-top: 12px;
+		border-top: 1px solid #dcdcde;
+	}
+
+	.apex-cast-post-type {
+		display: flex;
+		gap: 8px;
+		margin: 0 0 8px;
+		padding: 0;
+		border: 0;
+
+		label {
+			cursor: pointer;
+		}
+	}
+
+	.apex-cast-send-button {
+		width: 100%;
+	}
+
+	.apex-cast-sent {
+		color: #00a32a;
+		font-weight: 600;
+	}
+
+	.apex-cast-empty-product {
+		color: #50575e;
+		font-style: italic;
+	}
+}

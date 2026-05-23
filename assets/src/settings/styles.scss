@@ -1,0 +1,55 @@
+/**
+ * Apex Cast settings page styles.
+ */
+
+.apex-cast-settings {
+	max-width: 900px;
+
+	.apex-cast-test-result {
+		margin-left: 8px;
+		font-size: 13px;
+
+		&.success {
+			color: #00a32a;
+		}
+
+		&.failure {
+			color: #d63638;
+		}
+	}
+
+	.apex-cast-do-not-use-input {
+		display: flex;
+		gap: 8px;
+		margin-top: 8px;
+	}
+
+	.apex-cast-tag-list {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-top: 8px;
+	}
+
+	.apex-cast-tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 8px;
+		background: #f0f0f1;
+		border-radius: 12px;
+		font-size: 12px;
+
+		button {
+			background: none;
+			border: 0;
+			padding: 0;
+			cursor: pointer;
+			color: #50575e;
+
+			&:hover {
+				color: #d63638;
+			}
+		}
+	}
+}

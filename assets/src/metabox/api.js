@@ -1,0 +1,81 @@
+/**
+ * Thin fetch wrapper for the metabox-side REST calls.
+ *
+ * Reads `window.APEX_CAST_DATA` for `restUrl` and `nonce` at call time so unit
+ * tests that load this module without a `window` global can still import it.
+ *
+ * @package
+ */
+
+/**
+ * Resolve the runtime bootstrap data, falling back to an empty object so
+ * imports never throw during test runs that don't shim `window`.
+ *
+ * @return {{ restUrl?: string, nonce?: string }} The localised bootstrap object, or an empty fallback.
+ */
+function bootstrap() {
+	if (typeof window === 'undefined' || !window.APEX_CAST_DATA) {
+		return {};
+	}
+	return window.APEX_CAST_DATA;
+}
+
+/**
+ * Perform a JSON request against the Apex Cast REST namespace and unwrap the
+ * `{ ok, data, error }` envelope.
+ *
+ * @param {string}  method HTTP method.
+ * @param {string}  path   Path under the REST namespace (e.g. "/generate").
+ * @param {?Object} body   Optional JSON-encodable body.
+ * @return {Promise<*>} Resolves to `data`; rejects with the envelope's error message.
+ */
+async function request(method, path, body) {
+	const data = bootstrap();
+	const response = await fetch(`${data.restUrl || ''}${path}`, {
+		method,
+		headers: {
+			'Content-Type': 'application/json',
+			'X-WP-Nonce': data.nonce || '',
+		},
+		body: body ? JSON.stringify(body) : undefined,
+	});
+
+	let payload;
+	try {
+		payload = await response.json();
+	} catch (e) {
+		throw new Error(`Server returned HTTP ${response.status}.`);
+	}
+
+	if (!payload || payload.ok !== true) {
+		const message =
+			(payload && payload.error && payload.error.message) ||
+			`Server returned HTTP ${response.status}.`;
+		throw new Error(message);
+	}
+
+	return payload.data;
+}
+
+export function generateDrafts(productId, platforms) {
+	return request('POST', '/generate', {
+		product_id: productId,
+		platforms,
+	});
+}
+
+export function saveDrafts(productId, drafts) {
+	return request('POST', '/save-drafts', {
+		product_id: productId,
+		drafts,
+	});
+}
+
+export function sendDrafts(productId, drafts, platforms, postType) {
+	return request('POST', '/send', {
+		product_id: productId,
+		drafts,
+		platforms,
+		post_type: postType,
+	});
+}

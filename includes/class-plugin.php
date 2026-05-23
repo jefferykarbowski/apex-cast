@@ -11,6 +11,7 @@ namespace ApexChute\ApexCast;
 
 use ApexChute\ApexCast\AI\AIProviderInterface;
 use ApexChute\ApexCast\Adapters\BackendAdapterInterface;
+use ApexChute\ApexCast\Admin\Admin;
 use ApexChute\ApexCast\Rest\RestController;
 
 /**
@@ -86,6 +87,13 @@ final class Plugin {
 	private ?RestController $rest_controller = null;
 
 	/**
+	 * Lazy admin (settings page + metabox + asset enqueue).
+	 *
+	 * @var Admin|null
+	 */
+	private ?Admin $admin = null;
+
+	/**
 	 * Private constructor — use Plugin::instance().
 	 */
 	private function __construct() {}
@@ -112,6 +120,7 @@ final class Plugin {
 	public function init(): void {
 		add_action( 'init', array( $this, 'load_textdomain' ) );
 		$this->rest_controller()->register();
+		$this->admin()->register();
 	}
 
 	/**
@@ -223,5 +232,17 @@ final class Plugin {
 			$this->rest_controller = new RestController();
 		}
 		return $this->rest_controller;
+	}
+
+	/**
+	 * Admin (settings page + metabox + asset enqueue) accessor (lazy).
+	 *
+	 * @return Admin
+	 */
+	public function admin(): Admin {
+		if ( null === $this->admin ) {
+			$this->admin = new Admin();
+		}
+		return $this->admin;
 	}
 }

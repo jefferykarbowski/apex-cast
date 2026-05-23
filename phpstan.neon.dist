@@ -14,3 +14,8 @@ parameters:
         - vendor/php-stubs/woocommerce-stubs/woocommerce-stubs.php
     treatPhpDocTypesAsCertain: false
     inferPrivatePropertyTypeFromConstructor: true
+    # Plugin-defined constants in apex-cast.php — PHPStan's cross-file constant
+    # resolution doesn't always see define() calls in the entrypoint when
+    # analysing namespaced classes, so we explicitly ignore those lookups.
+    ignoreErrors:
+        - '#Constant APEX_CAST_[A-Z_]+ not found\.#'
