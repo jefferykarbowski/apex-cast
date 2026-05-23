@@ -161,8 +161,10 @@ final class Settings {
 					'page_access_token_encrypted' => '',
 				),
 				'pinterest' => array(
-					'access_token_encrypted' => '',
-					'board_id'               => '',
+					'access_token_encrypted'  => '',
+					'refresh_token_encrypted' => '',
+					'expires_at'              => 0,
+					'board_id'                => '',
 				),
 				'x'         => array(
 					'access_token_encrypted'        => '',

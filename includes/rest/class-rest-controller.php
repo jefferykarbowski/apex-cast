@@ -11,6 +11,8 @@ namespace ApexChute\ApexCast\Rest;
 
 use ApexChute\ApexCast\AI\AIProviderException;
 use ApexChute\ApexCast\AI\BrandVoice;
+use ApexChute\ApexCast\OAuth\OAuthStateStore;
+use ApexChute\ApexCast\OAuth\PinterestOAuth;
 use ApexChute\ApexCast\Plugin;
 use ApexChute\ApexCast\Publishers\PublishRequest;
 use ApexChute\ApexCast\Publishers\PublisherException;
@@ -132,6 +134,29 @@ final class RestController {
 					'callback'            => array( $this, 'post_settings' ),
 					'permission_callback' => $auth,
 				),
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/oauth/(?P<platform>[a-z0-9_-]+)/start',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'oauth_start' ),
+				'permission_callback' => $auth,
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/oauth/(?P<platform>[a-z0-9_-]+)/callback',
+			array(
+				'methods'             => 'GET',
+				// Public on purpose — Pinterest's redirect-back can't include a
+				// REST nonce. The state-token check + user-id verification inside
+				// the handler is the auth gate.
+				'callback'            => array( $this, 'oauth_callback' ),
+				'permission_callback' => '__return_true',
 			)
 		);
 	}
@@ -487,6 +512,175 @@ final class RestController {
 		$store->save( $merged );
 
 		return $this->ok( $this->redact_secrets( $merged ) );
+	}
+
+	/**
+	 * POST /oauth/{platform}/start — initiate an OAuth 2.0 flow.
+	 *
+	 * Issues a state token, builds the platform's auth URL, and returns it for
+	 * the browser to navigate to. Phase 6a supports Pinterest only.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @return WP_REST_Response
+	 */
+	public function oauth_start( WP_REST_Request $request ): WP_REST_Response {
+		$platform = sanitize_key( (string) $request['platform'] );
+
+		if ( 'pinterest' !== $platform ) {
+			return $this->error(
+				'unsupported_platform',
+				sprintf( 'OAuth is not yet implemented for "%s".', $platform ),
+				400
+			);
+		}
+
+		$oauth = $this->build_pinterest_oauth();
+		if ( null === $oauth ) {
+			return $this->error(
+				'not_configured',
+				'Pinterest app credentials are not set. Define APEX_CAST_PINTEREST_CLIENT_ID and APEX_CAST_PINTEREST_CLIENT_SECRET in wp-config.php.',
+				400
+			);
+		}
+
+		$state_store = new OAuthStateStore();
+		$state       = $state_store->create( $platform, get_current_user_id() );
+		$auth_url    = $oauth->build_auth_url( $this->oauth_callback_url( $platform ), $state );
+
+		return $this->ok( array( 'auth_url' => $auth_url ) );
+	}
+
+	/**
+	 * GET /oauth/{platform}/callback — receive the OAuth redirect, exchange the code,
+	 * store the resulting tokens, and bounce the user back to the settings page.
+	 *
+	 * This is a browser-driven endpoint (Pinterest issues a 302 to it); the only
+	 * auth gate is the state-token + user-id check, since the browser can't send
+	 * a REST nonce on a cross-site redirect.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @return void
+	 */
+	public function oauth_callback( WP_REST_Request $request ): void {
+		$platform      = sanitize_key( (string) $request['platform'] );
+		$code          = (string) ( $request['code'] ?? '' );
+		$state         = (string) ( $request['state'] ?? '' );
+		$pinterest_err = (string) ( $request['error'] ?? '' );
+
+		$settings_url = admin_url( 'options-general.php?page=apex-cast-settings' );
+
+		if ( 'pinterest' !== $platform ) {
+			$this->finish_oauth_callback( $settings_url, $platform, 'unsupported_platform' );
+		}
+
+		if ( '' !== $pinterest_err ) {
+			Plugin::instance()->logger()->warn(
+				'rest.oauth_callback',
+				'Provider returned an error.',
+				array(
+					'platform' => $platform,
+					'error'    => $pinterest_err,
+				)
+			);
+			$this->finish_oauth_callback( $settings_url, $platform, 'provider_error' );
+		}
+
+		if ( '' === $code || '' === $state ) {
+			$this->finish_oauth_callback( $settings_url, $platform, 'missing_params' );
+		}
+
+		$state_store = new OAuthStateStore();
+		$state_data  = $state_store->consume( $state, $platform );
+		if ( null === $state_data ) {
+			$this->finish_oauth_callback( $settings_url, $platform, 'invalid_state' );
+		}
+		if ( get_current_user_id() !== $state_data['user_id'] ) {
+			$this->finish_oauth_callback( $settings_url, $platform, 'user_mismatch' );
+		}
+
+		$oauth = $this->build_pinterest_oauth();
+		if ( null === $oauth ) {
+			$this->finish_oauth_callback( $settings_url, $platform, 'not_configured' );
+		}
+
+		try {
+			$tokens = $oauth->exchange_code( $code, $this->oauth_callback_url( $platform ) );
+		} catch ( PublisherException $e ) {
+			Plugin::instance()->logger()->error( 'rest.oauth_callback', $e->getMessage(), array( 'platform' => $platform ) );
+			$this->finish_oauth_callback( $settings_url, $platform, 'token_exchange_failed' );
+		}
+
+		$settings_store = Plugin::instance()->settings();
+		$current        = $settings_store->all();
+
+		if ( ! isset( $current['platforms']['pinterest'] ) || ! is_array( $current['platforms']['pinterest'] ) ) {
+			$current['platforms']['pinterest'] = array();
+		}
+
+		$current['platforms']['pinterest']['access_token_encrypted'] = $settings_store->encrypt_secret( $tokens['access_token'] );
+		if ( '' !== $tokens['refresh_token'] ) {
+			$current['platforms']['pinterest']['refresh_token_encrypted'] = $settings_store->encrypt_secret( $tokens['refresh_token'] );
+		}
+		$current['platforms']['pinterest']['expires_at'] = $tokens['expires_in'] > 0 ? time() + $tokens['expires_in'] : 0;
+
+		$settings_store->save( $current );
+		Plugin::instance()->logger()->info( 'rest.oauth_callback', 'OAuth completed.', array( 'platform' => $platform ) );
+
+		$this->finish_oauth_callback( $settings_url, $platform, 'success' );
+	}
+
+	/**
+	 * Build the publicly-routable URL Pinterest should redirect back to.
+	 *
+	 * @param string $platform Platform identifier (becomes part of the path).
+	 * @return string
+	 */
+	private function oauth_callback_url( string $platform ): string {
+		return rest_url( sprintf( 'apex-cast/v1/oauth/%s/callback', $platform ) );
+	}
+
+	/**
+	 * Build a PinterestOAuth instance from wp-config constants. Returns null
+	 * when either credential constant is missing or empty.
+	 *
+	 * @return PinterestOAuth|null
+	 */
+	private function build_pinterest_oauth(): ?PinterestOAuth {
+		$client_id     = defined( 'APEX_CAST_PINTEREST_CLIENT_ID' )
+			? (string) constant( 'APEX_CAST_PINTEREST_CLIENT_ID' )
+			: '';
+		$client_secret = defined( 'APEX_CAST_PINTEREST_CLIENT_SECRET' )
+			? (string) constant( 'APEX_CAST_PINTEREST_CLIENT_SECRET' )
+			: '';
+
+		if ( '' === $client_id || '' === $client_secret ) {
+			return null;
+		}
+
+		return new PinterestOAuth( $client_id, $client_secret );
+	}
+
+	/**
+	 * Send the user back to the settings page with a result code and stop the request.
+	 *
+	 * Used by every termination branch of `oauth_callback`; declared here so the
+	 * `wp_safe_redirect + exit` pattern lives in one place.
+	 *
+	 * @param string $settings_url Base settings-page URL.
+	 * @param string $platform     Platform identifier.
+	 * @param string $result       Result code: 'success' or one of the failure reasons.
+	 * @return never
+	 */
+	private function finish_oauth_callback( string $settings_url, string $platform, string $result ): void {
+		$target = add_query_arg(
+			array(
+				'apex_cast_oauth' => $result,
+				'platform'        => $platform,
+			),
+			$settings_url
+		);
+		wp_safe_redirect( $target );
+		exit;
 	}
 
 	/**

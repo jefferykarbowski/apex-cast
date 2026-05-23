@@ -27,8 +27,8 @@ if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
 	define( 'HOUR_IN_SECONDS', 3600 );
 }
 
-// In-memory stand-ins for the handful of WP functions our HTTP adapters touch
-// (transient-based rate limiting). The real WP runtime ships its own versions.
+// In-memory stand-ins for the handful of WP functions our publishers + OAuth
+// state store touch. The real WP runtime ships its own versions.
 if ( ! function_exists( 'get_transient' ) ) {
 	/**
 	 * Test-only stub: in-memory transient read.
@@ -52,5 +52,19 @@ if ( ! function_exists( 'get_transient' ) ) {
 		unset( $expiration );
 		$GLOBALS['__apex_cast_test_transients'][ $key ] = $value;
 		return true;
+	}
+
+	/**
+	 * Test-only stub: in-memory transient delete.
+	 *
+	 * @param string $key Transient key.
+	 * @return bool
+	 */
+	function delete_transient( string $key ): bool {
+		if ( isset( $GLOBALS['__apex_cast_test_transients'][ $key ] ) ) {
+			unset( $GLOBALS['__apex_cast_test_transients'][ $key ] );
+			return true;
+		}
+		return false;
 	}
 }

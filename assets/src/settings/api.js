@@ -66,3 +66,14 @@ export function testConnection(target) {
 		target,
 	});
 }
+
+/**
+ * Initiate an OAuth flow for a platform; the server returns the `auth_url` the
+ * browser should navigate to. The caller is responsible for the redirect.
+ *
+ * @param {string} platform Platform identifier ("pinterest").
+ * @return {Promise<{auth_url: string}>} The data payload from the envelope.
+ */
+export function startOAuth(platform) {
+	return request('POST', `/oauth/${platform}/start`);
+}

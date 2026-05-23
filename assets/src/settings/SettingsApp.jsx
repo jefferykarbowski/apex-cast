@@ -5,7 +5,7 @@
 import { useEffect, useState, useCallback } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 
-import { getSettings, saveSettings, testConnection } from './api';
+import { getSettings, saveSettings, testConnection, startOAuth } from './api';
 
 const TABS = [
 	{ key: 'general', label: 'General' },
@@ -75,28 +75,26 @@ function renderPlatformPlaceholder() {
 /**
  * Render the Pinterest configuration row in the Platforms tab.
  *
- * Switches between two states based on whether an access token is already
- * stored: a "Connected" view (test + disconnect + editable board id) or a
- * "Connect" view (paste token + board id, saved by the main Save button).
+ * Two states based on whether an access token is already stored:
+ *   - Connected: editable board id, Test connection, Disconnect
+ *   - Disconnected: "Connect Pinterest" button (kicks off OAuth) + editable board id
  *
  * @param {Object}   args                     Render arguments.
  * @param {Object}   args.settings            Current settings tree.
  * @param {Function} args.update              Dot-path settings updater.
- * @param {Object}   args.pendingKeys         Pending plaintext secrets keyed by platform.
- * @param {Function} args.setPendingKeys      Setter for pending plaintext secrets.
  * @param {Function} args.runTest             Test-connection callback (takes target id).
  * @param {Function} args.disconnectPinterest Disconnect callback.
  * @param {Function} args.renderTestResult    Renders the saved test-connection result.
+ * @param {Function} args.onStartConnect      Click handler for the "Connect Pinterest" button.
  * @return {Element} React element.
  */
 function renderPinterestRow({
 	settings,
 	update,
-	pendingKeys,
-	setPendingKeys,
 	runTest,
 	disconnectPinterest,
 	renderTestResult,
+	onStartConnect,
 }) {
 	const pinterest = settings.platforms?.pinterest || {};
 	const tokenSet = pinterest.access_token_set === true;
@@ -106,7 +104,7 @@ function renderPinterestRow({
 			<>
 				<p>
 					<span className="apex-cast-test-result success">
-						{__('Token saved.', 'apex-cast')}
+						{__('Connected to Pinterest.', 'apex-cast')}
 					</span>
 				</p>
 				<p>
@@ -150,23 +148,13 @@ function renderPinterestRow({
 	return (
 		<>
 			<p>
-				<label htmlFor="apex-cast-pinterest-token">
-					{__('Access token:', 'apex-cast')}
-				</label>
-				<br />
-				<input
-					id="apex-cast-pinterest-token"
-					type="password"
-					className="regular-text"
-					placeholder="pina_..."
-					value={pendingKeys.pinterest || ''}
-					onChange={(e) =>
-						setPendingKeys({
-							...pendingKeys,
-							pinterest: e.target.value,
-						})
-					}
-				/>
+				<button
+					type="button"
+					className="button button-primary"
+					onClick={onStartConnect}
+				>
+					{__('Connect Pinterest', 'apex-cast')}
+				</button>
 			</p>
 			<p>
 				<label htmlFor="apex-cast-pinterest-board-new">
@@ -185,7 +173,7 @@ function renderPinterestRow({
 			</p>
 			<p className="description">
 				{__(
-					'Generate a personal access token at developers.pinterest.com/apps/. Paste it here and click Save. Phase 6 will replace this with a one-click "Connect Pinterest" button.',
+					"You'll be redirected to Pinterest to authorize Apex Cast. Enter the destination board ID (the numeric segment from the board's URL) before or after connecting.",
 					'apex-cast'
 				)}
 			</p>
@@ -205,7 +193,6 @@ export default function SettingsApp({ bootstrapData }) {
 	const [settings, setSettings] = useState(null);
 	const [pendingKeys, setPendingKeys] = useState({
 		anthropic: '',
-		pinterest: '',
 	});
 	const [saving, setSaving] = useState(false);
 	const [savedAt, setSavedAt] = useState(null);
@@ -220,6 +207,62 @@ export default function SettingsApp({ bootstrapData }) {
 		getSettings()
 			.then(setSettings)
 			.catch((e) => setError(e.message));
+	}, []);
+
+	// Detect ?apex_cast_oauth=... in the URL after Pinterest redirects us
+	// back from the OAuth callback. Show a success/error notice, jump to the
+	// Platforms tab, refresh settings, and scrub the params from the URL so a
+	// page reload doesn't fire the toast a second time.
+	useEffect(() => {
+		const params = new URLSearchParams(window.location.search);
+		const result = params.get('apex_cast_oauth');
+		const platform = params.get('platform') || '';
+		if (!result) {
+			return;
+		}
+
+		if (result === 'success') {
+			setSavedAt(Date.now());
+			setTab('platforms');
+			getSettings()
+				.then(setSettings)
+				.catch((e) => setError(e.message));
+		} else {
+			setError(
+				`OAuth for ${platform || 'platform'} failed (${result}). Please try again.`
+			);
+			setTab('platforms');
+		}
+
+		params.delete('apex_cast_oauth');
+		params.delete('platform');
+		const newSearch = params.toString();
+		window.history.replaceState(
+			{},
+			'',
+			window.location.pathname + (newSearch ? '?' + newSearch : '')
+		);
+	}, []);
+
+	/**
+	 * Kick off the Pinterest OAuth flow: ask the server for an auth URL, then
+	 * navigate the browser to it. The user comes back to this same settings
+	 * page via the callback handler's redirect.
+	 *
+	 * @return {Promise<void>}
+	 */
+	const startPinterestConnect = useCallback(async () => {
+		setError(null);
+		try {
+			const result = await startOAuth('pinterest');
+			if (result && result.auth_url) {
+				window.location.href = result.auth_url;
+			} else {
+				setError('Server did not return an auth URL.');
+			}
+		} catch (e) {
+			setError(e.message);
+		}
 	}, []);
 
 	const update = useCallback((path, value) => {
@@ -244,11 +287,6 @@ export default function SettingsApp({ bootstrapData }) {
 			delete body.ai_provider.anthropic.api_key_set;
 		}
 
-		if (pendingKeys.pinterest) {
-			body.platforms = body.platforms || {};
-			body.platforms.pinterest = body.platforms.pinterest || {};
-			body.platforms.pinterest.access_token = pendingKeys.pinterest;
-		}
 		// Strip read-only redacted fields the server returns so we don't echo them back.
 		if (body.platforms) {
 			Object.keys(body.platforms).forEach((platformId) => {
@@ -266,7 +304,7 @@ export default function SettingsApp({ bootstrapData }) {
 		try {
 			const updated = await saveSettings(body);
 			setSettings(updated);
-			setPendingKeys({ anthropic: '', pinterest: '' });
+			setPendingKeys({ anthropic: '' });
 			setSavedAt(Date.now());
 		} catch (e) {
 			setError(e.message);
@@ -702,11 +740,11 @@ export default function SettingsApp({ bootstrapData }) {
 											? renderPinterestRow({
 													settings,
 													update,
-													pendingKeys,
-													setPendingKeys,
 													runTest,
 													disconnectPinterest,
 													renderTestResult,
+													onStartConnect:
+														startPinterestConnect,
 												})
 											: renderPlatformPlaceholder()}
 									</td>
