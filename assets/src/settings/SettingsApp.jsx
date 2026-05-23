@@ -60,20 +60,136 @@ function setPath(settings, path, value) {
 }
 
 /**
- * Heuristic: does any encrypted-secret field exist under this platform's settings?
- * The server redacts every `*_encrypted` into a `*_set` boolean before sending
- * the tree to the browser; if any of those booleans are true, the platform has
- * usable credentials saved.
+ * Render the placeholder row for a platform whose publisher hasn't shipped yet.
  *
- * @param {Object} platformSettings Per-platform sub-tree from settings.
- * @return {boolean} True if any redacted secret field is populated.
+ * @return {Element} React element.
  */
-function hasAnySecret(platformSettings) {
-	if (!platformSettings || typeof platformSettings !== 'object') {
-		return false;
+function renderPlatformPlaceholder() {
+	return (
+		<span className="apex-cast-test-result failure">
+			{__('Not yet implemented — coming in a later phase.', 'apex-cast')}
+		</span>
+	);
+}
+
+/**
+ * Render the Pinterest configuration row in the Platforms tab.
+ *
+ * Switches between two states based on whether an access token is already
+ * stored: a "Connected" view (test + disconnect + editable board id) or a
+ * "Connect" view (paste token + board id, saved by the main Save button).
+ *
+ * @param {Object}   args                     Render arguments.
+ * @param {Object}   args.settings            Current settings tree.
+ * @param {Function} args.update              Dot-path settings updater.
+ * @param {Object}   args.pendingKeys         Pending plaintext secrets keyed by platform.
+ * @param {Function} args.setPendingKeys      Setter for pending plaintext secrets.
+ * @param {Function} args.runTest             Test-connection callback (takes target id).
+ * @param {Function} args.disconnectPinterest Disconnect callback.
+ * @param {Function} args.renderTestResult    Renders the saved test-connection result.
+ * @return {Element} React element.
+ */
+function renderPinterestRow({
+	settings,
+	update,
+	pendingKeys,
+	setPendingKeys,
+	runTest,
+	disconnectPinterest,
+	renderTestResult,
+}) {
+	const pinterest = settings.platforms?.pinterest || {};
+	const tokenSet = pinterest.access_token_set === true;
+
+	if (tokenSet) {
+		return (
+			<>
+				<p>
+					<span className="apex-cast-test-result success">
+						{__('Token saved.', 'apex-cast')}
+					</span>
+				</p>
+				<p>
+					<label htmlFor="apex-cast-pinterest-board">
+						{__('Board ID:', 'apex-cast')}{' '}
+					</label>
+					<input
+						id="apex-cast-pinterest-board"
+						type="text"
+						className="regular-text"
+						value={pinterest.board_id || ''}
+						onChange={(e) =>
+							update(
+								'platforms.pinterest.board_id',
+								e.target.value
+							)
+						}
+					/>
+				</p>
+				<p>
+					<button
+						type="button"
+						className="button"
+						onClick={() => runTest('pinterest')}
+					>
+						{__('Test connection', 'apex-cast')}
+					</button>
+					{renderTestResult('pinterest')}{' '}
+					<button
+						type="button"
+						className="button"
+						onClick={disconnectPinterest}
+					>
+						{__('Disconnect', 'apex-cast')}
+					</button>
+				</p>
+			</>
+		);
 	}
-	return Object.keys(platformSettings).some(
-		(k) => k.endsWith('_set') && platformSettings[k] === true
+
+	return (
+		<>
+			<p>
+				<label htmlFor="apex-cast-pinterest-token">
+					{__('Access token:', 'apex-cast')}
+				</label>
+				<br />
+				<input
+					id="apex-cast-pinterest-token"
+					type="password"
+					className="regular-text"
+					placeholder="pina_..."
+					value={pendingKeys.pinterest || ''}
+					onChange={(e) =>
+						setPendingKeys({
+							...pendingKeys,
+							pinterest: e.target.value,
+						})
+					}
+				/>
+			</p>
+			<p>
+				<label htmlFor="apex-cast-pinterest-board-new">
+					{__('Board ID:', 'apex-cast')}
+				</label>
+				<br />
+				<input
+					id="apex-cast-pinterest-board-new"
+					type="text"
+					className="regular-text"
+					value={pinterest.board_id || ''}
+					onChange={(e) =>
+						update('platforms.pinterest.board_id', e.target.value)
+					}
+				/>
+			</p>
+			<p className="description">
+				{__(
+					'Generate a personal access token at developers.pinterest.com/apps/. Paste it here and click Save. Phase 6 will replace this with a one-click "Connect Pinterest" button.',
+					'apex-cast'
+				)}
+			</p>
+		</>
 	);
 }
 
@@ -87,7 +203,10 @@ function hasAnySecret(platformSettings) {
 export default function SettingsApp({ bootstrapData }) {
 	const [tab, setTab] = useState('general');
 	const [settings, setSettings] = useState(null);
-	const [pendingKeys, setPendingKeys] = useState({ anthropic: '' });
+	const [pendingKeys, setPendingKeys] = useState({
+		anthropic: '',
+		pinterest: '',
+	});
 	const [saving, setSaving] = useState(false);
 	const [savedAt, setSavedAt] = useState(null);
 	const [error, setError] = useState(null);
@@ -125,16 +244,60 @@ export default function SettingsApp({ bootstrapData }) {
 			delete body.ai_provider.anthropic.api_key_set;
 		}
 
+		if (pendingKeys.pinterest) {
+			body.platforms = body.platforms || {};
+			body.platforms.pinterest = body.platforms.pinterest || {};
+			body.platforms.pinterest.access_token = pendingKeys.pinterest;
+		}
+		// Strip read-only redacted fields the server returns so we don't echo them back.
+		if (body.platforms) {
+			Object.keys(body.platforms).forEach((platformId) => {
+				const platform = body.platforms[platformId];
+				if (platform && typeof platform === 'object') {
+					Object.keys(platform).forEach((key) => {
+						if (key.endsWith('_set')) {
+							delete platform[key];
+						}
+					});
+				}
+			});
+		}
+
 		try {
 			const updated = await saveSettings(body);
 			setSettings(updated);
-			setPendingKeys({ anthropic: '' });
+			setPendingKeys({ anthropic: '', pinterest: '' });
 			setSavedAt(Date.now());
 		} catch (e) {
 			setError(e.message);
 		}
 		setSaving(false);
 	}, [settings, pendingKeys]);
+
+	/**
+	 * Clear the Pinterest credentials by saving an explicit `access_token: null`.
+	 *
+	 * @return {Promise<void>}
+	 */
+	const disconnectPinterest = useCallback(async () => {
+		setSaving(true);
+		setError(null);
+		try {
+			const updated = await saveSettings({
+				platforms: { pinterest: { access_token: null } },
+			});
+			setSettings(updated);
+			setTestResult((prev) => {
+				const { pinterest, ...rest } = prev;
+				void pinterest;
+				return rest;
+			});
+			setSavedAt(Date.now());
+		} catch (e) {
+			setError(e.message);
+		}
+		setSaving(false);
+	}, []);
 
 	const runTest = useCallback(async (target) => {
 		setTestResult((prev) => ({
@@ -531,35 +694,24 @@ export default function SettingsApp({ bootstrapData }) {
 					</p>
 					<table className="form-table">
 						<tbody>
-							{PLATFORMS.map((p) => {
-								const configured = hasAnySecret(
-									settings.platforms?.[p.id]
-								);
-								return (
-									<tr key={p.id}>
-										<th>{p.label}</th>
-										<td>
-											<span
-												className={`apex-cast-test-result ${
-													configured
-														? 'success'
-														: 'failure'
-												}`}
-											>
-												{configured
-													? __(
-															'Connected',
-															'apex-cast'
-														)
-													: __(
-															'Not yet implemented — coming in a later phase.',
-															'apex-cast'
-														)}
-											</span>
-										</td>
-									</tr>
-								);
-							})}
+							{PLATFORMS.map((p) => (
+								<tr key={p.id}>
+									<th>{p.label}</th>
+									<td>
+										{p.id === 'pinterest'
+											? renderPinterestRow({
+													settings,
+													update,
+													pendingKeys,
+													setPendingKeys,
+													runTest,
+													disconnectPinterest,
+													renderTestResult,
+												})
+											: renderPlatformPlaceholder()}
+									</td>
+								</tr>
+							))}
 						</tbody>
 					</table>
 				</>

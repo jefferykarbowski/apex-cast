@@ -11,6 +11,7 @@ namespace ApexChute\ApexCast;
 
 use ApexChute\ApexCast\AI\AIProviderInterface;
 use ApexChute\ApexCast\Admin\Admin;
+use ApexChute\ApexCast\Publishers\PinterestPublisher;
 use ApexChute\ApexCast\Rest\RestController;
 
 /**
@@ -199,15 +200,37 @@ final class Plugin {
 	public function publisher_registry(): PublisherRegistry {
 		if ( null === $this->publisher_registry ) {
 			$this->publisher_registry = new PublisherRegistry();
+
+			// First-party publishers shipped with apex-cast. Each is always
+			// registered; whether it's *configured* is the publisher's own
+			// judgement based on stored credentials.
+			$this->register_pinterest( $this->publisher_registry );
+
 			/**
-			 * Fires once per request when the registry is first built, giving
-			 * publishers a chance to register themselves.
+			 * Fires once per request after first-party publishers are registered,
+			 * giving third-party code a chance to add its own.
 			 *
-			 * @param PublisherRegistry $registry The (still empty) registry.
+			 * @param PublisherRegistry $registry The registry, populated with the
+			 *                                    first-party publishers shipped
+			 *                                    with apex-cast.
 			 */
 			do_action( 'apex_cast_register_publishers', $this->publisher_registry );
 		}
 		return $this->publisher_registry;
+	}
+
+	/**
+	 * Build and register the Pinterest publisher with the credentials currently
+	 * stored in settings. Missing credentials are passed through as empty
+	 * strings — the publisher self-reports as unconfigured in that case.
+	 *
+	 * @param PublisherRegistry $registry The registry to populate.
+	 * @return void
+	 */
+	private function register_pinterest( PublisherRegistry $registry ): void {
+		$access_token = $this->settings()->get_secret( 'platforms.pinterest.access_token_encrypted' );
+		$board_id     = (string) $this->settings()->get( 'platforms.pinterest.board_id', '' );
+		$registry->register( new PinterestPublisher( $access_token, $board_id ) );
 	}
 
 	/**
