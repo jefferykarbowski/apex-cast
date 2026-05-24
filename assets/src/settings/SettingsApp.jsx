@@ -10,21 +10,18 @@ import { getSettings, saveSettings, testConnection, startOAuth } from './api';
 const TABS = [
 	{ key: 'general', label: 'General' },
 	{ key: 'voice', label: 'Brand voice' },
-	{ key: 'ai', label: 'AI provider' },
 	{ key: 'platforms', label: 'Platforms' },
 ];
 
 const HASHTAG_STRATEGIES = ['sparse', 'moderate', 'heavy'];
 
-// The full set of platforms the AI provider can generate for. Each row in the
+// The full set of platforms Apex Cast can broadcast to. Each row in the
 // Platforms tab reflects the state of one of these. Order matches what the
 // metabox shows.
 const PLATFORMS = [
 	{ id: 'facebook', label: 'Facebook' },
 	{ id: 'instagram', label: 'Instagram' },
 	{ id: 'pinterest', label: 'Pinterest' },
-	{ id: 'x', label: 'X' },
-	{ id: 'reddit', label: 'Reddit' },
 ];
 
 /**
@@ -328,9 +325,6 @@ function renderInstagramRow({ settings, runTest, renderTestResult }) {
 export default function SettingsApp({ bootstrapData }) {
 	const [tab, setTab] = useState('general');
 	const [settings, setSettings] = useState(null);
-	const [pendingKeys, setPendingKeys] = useState({
-		anthropic: '',
-	});
 	const [saving, setSaving] = useState(false);
 	const [savedAt, setSavedAt] = useState(null);
 	const [error, setError] = useState(null);
@@ -435,14 +429,6 @@ export default function SettingsApp({ bootstrapData }) {
 		setError(null);
 
 		const body = cloneSettings(settings);
-		if (pendingKeys.anthropic) {
-			body.ai_provider = body.ai_provider || {};
-			body.ai_provider.anthropic = body.ai_provider.anthropic || {};
-			body.ai_provider.anthropic.api_key = pendingKeys.anthropic;
-		}
-		if (body.ai_provider?.anthropic) {
-			delete body.ai_provider.anthropic.api_key_set;
-		}
 
 		// Strip read-only redacted fields the server returns so we don't echo them back.
 		if (body.platforms) {
@@ -461,13 +447,12 @@ export default function SettingsApp({ bootstrapData }) {
 		try {
 			const updated = await saveSettings(body);
 			setSettings(updated);
-			setPendingKeys({ anthropic: '' });
 			setSavedAt(Date.now());
 		} catch (e) {
 			setError(e.message);
 		}
 		setSaving(false);
-	}, [settings, pendingKeys]);
+	}, [settings]);
 
 	/**
 	 * Clear the Pinterest credentials by saving an explicit `access_token: null`.
@@ -815,115 +800,11 @@ export default function SettingsApp({ bootstrapData }) {
 				</table>
 			)}
 
-			{tab === 'ai' && (
-				<table className="form-table">
-					<tbody>
-						<tr>
-							<th>
-								<label htmlFor="apex-cast-anthropic-key">
-									{__('Anthropic API key', 'apex-cast')}
-								</label>
-							</th>
-							<td>
-								<input
-									id="apex-cast-anthropic-key"
-									type="password"
-									className="regular-text"
-									placeholder={
-										settings.ai_provider?.anthropic
-											?.api_key_set
-											? __(
-													'•••••••• (saved)',
-													'apex-cast'
-												)
-											: 'sk-ant-…'
-									}
-									value={pendingKeys.anthropic}
-									onChange={(e) =>
-										setPendingKeys({
-											...pendingKeys,
-											anthropic: e.target.value,
-										})
-									}
-								/>
-								<p className="description">
-									{__(
-										'Leave blank to keep the existing key.',
-										'apex-cast'
-									)}
-								</p>
-							</td>
-						</tr>
-						<tr>
-							<th>
-								<label htmlFor="apex-cast-anthropic-model">
-									{__('Model', 'apex-cast')}
-								</label>
-							</th>
-							<td>
-								<input
-									id="apex-cast-anthropic-model"
-									type="text"
-									className="regular-text"
-									value={
-										settings.ai_provider?.anthropic
-											?.model || ''
-									}
-									onChange={(e) =>
-										update(
-											'ai_provider.anthropic.model',
-											e.target.value
-										)
-									}
-								/>
-							</td>
-						</tr>
-						<tr>
-							<th>
-								<label htmlFor="apex-cast-anthropic-max-tokens">
-									{__('Max tokens', 'apex-cast')}
-								</label>
-							</th>
-							<td>
-								<input
-									id="apex-cast-anthropic-max-tokens"
-									type="number"
-									min="1"
-									value={
-										settings.ai_provider?.anthropic
-											?.max_tokens || 1024
-									}
-									onChange={(e) =>
-										update(
-											'ai_provider.anthropic.max_tokens',
-											parseInt(e.target.value, 10) || 1024
-										)
-									}
-								/>
-							</td>
-						</tr>
-						<tr>
-							<th />
-							<td>
-								<button
-									type="button"
-									className="button"
-									onClick={() => runTest('ai')}
-								>
-									{__('Test connection', 'apex-cast')}
-								</button>
-								{renderTestResult('ai')}
-							</td>
-						</tr>
-					</tbody>
-				</table>
-			)}
-
 			{tab === 'platforms' && (
 				<>
 					<p className="description">
 						{__(
-							'Each platform has its own connection flow. Pinterest, X, and Reddit work with personal accounts; Facebook + Instagram require a Page + Creator account. Connection UI lands per-platform in upcoming phases.',
+							'Each platform has its own connection flow. Pinterest connects with a personal account; Facebook + Instagram require a Page + Creator account linked through Meta.',
 							'apex-cast'
 						)}
 					</p>

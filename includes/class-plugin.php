@@ -9,7 +9,6 @@ declare( strict_types=1 );
 
 namespace ApexChute\ApexCast;
 
-use ApexChute\ApexCast\AI\AIProviderInterface;
 use ApexChute\ApexCast\Admin\Admin;
 use ApexChute\ApexCast\Publishers\FacebookPagePublisher;
 use ApexChute\ApexCast\Publishers\InstagramPublisher;
@@ -54,16 +53,8 @@ final class Plugin {
 	private ?Logger $logger = null;
 
 	/**
-	 * Lazy AI provider factory.
-	 *
-	 * @var ProviderFactory|null
-	 */
-	private ?ProviderFactory $provider_factory = null;
-
-	/**
 	 * Lazy publisher registry. Owns the set of per-platform publishers
-	 * (Pinterest, X, Reddit, Facebook Page, Instagram). Empty until Phase 5+
-	 * lands real publishers — REST callers handle "no publisher" gracefully.
+	 * (Pinterest, Facebook Page, Instagram).
 	 *
 	 * @var PublisherRegistry|null
 	 */
@@ -174,20 +165,6 @@ final class Plugin {
 			$this->logger = new Logger();
 		}
 		return $this->logger;
-	}
-
-	/**
-	 * Build (or null) the currently-configured AI provider.
-	 *
-	 * Returns null when no provider is configured (no API key, unknown id, etc.).
-	 *
-	 * @return AIProviderInterface|null
-	 */
-	public function ai_provider(): ?AIProviderInterface {
-		if ( null === $this->provider_factory ) {
-			$this->provider_factory = new ProviderFactory( $this->settings() );
-		}
-		return $this->provider_factory->create();
 	}
 
 	/**

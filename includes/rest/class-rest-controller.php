@@ -9,8 +9,6 @@ declare( strict_types=1 );
 
 namespace ApexChute\ApexCast\Rest;
 
-use ApexChute\ApexCast\AI\AIProviderException;
-use ApexChute\ApexCast\AI\BrandVoice;
 use ApexChute\ApexCast\OAuth\MetaOAuth;
 use ApexChute\ApexCast\OAuth\OAuthStateStore;
 use ApexChute\ApexCast\OAuth\PinterestOAuth;
@@ -31,9 +29,6 @@ final class RestController {
 
 	private const REST_NAMESPACE = 'apex-cast/v1';
 
-	private const GENERATE_PER_HOUR = 60;
-	private const RATE_KEY_PREFIX   = 'apex_cast_gen_rate_';
-
 	/**
 	 * Register the `rest_api_init` hook.
 	 *
@@ -53,10 +48,10 @@ final class RestController {
 
 		register_rest_route(
 			self::REST_NAMESPACE,
-			'/generate',
+			'/send',
 			array(
 				'methods'             => 'POST',
-				'callback'            => array( $this, 'generate' ),
+				'callback'            => array( $this, 'send' ),
 				'permission_callback' => $auth,
 				'args'                => array(
 					'product_id' => array(
@@ -68,26 +63,6 @@ final class RestController {
 						'required' => true,
 					),
 				),
-			)
-		);
-
-		register_rest_route(
-			self::REST_NAMESPACE,
-			'/save-drafts',
-			array(
-				'methods'             => 'POST',
-				'callback'            => array( $this, 'save_drafts' ),
-				'permission_callback' => $auth,
-			)
-		);
-
-		register_rest_route(
-			self::REST_NAMESPACE,
-			'/send',
-			array(
-				'methods'             => 'POST',
-				'callback'            => array( $this, 'send' ),
-				'permission_callback' => $auth,
 			)
 		);
 
@@ -172,107 +147,18 @@ final class RestController {
 	}
 
 	/**
-	 * POST /generate — call the AI provider and return drafts.
+	 * POST /send — broadcast a product's short description + featured image to
+	 * the requested platforms.
 	 *
-	 * @param WP_REST_Request $request REST request.
-	 * @return WP_REST_Response
-	 */
-	public function generate( WP_REST_Request $request ): WP_REST_Response {
-		$plugin   = Plugin::instance();
-		$provider = $plugin->ai_provider();
-		if ( null === $provider ) {
-			return $this->error( 'no_provider', 'No AI provider is configured.', 400 );
-		}
-
-		$product_id = (int) $request['product_id'];
-		$context    = $plugin->product_context_builder()->build( $product_id );
-		if ( null === $context ) {
-			return $this->error( 'product_not_found', 'Product not found.', 404 );
-		}
-
-		$platforms = $this->coerce_platforms( $request['platforms'] ?? array() );
-		if ( empty( $platforms ) ) {
-			return $this->error( 'no_platforms', 'At least one platform is required.', 400 );
-		}
-
-		if ( $this->is_rate_limited() ) {
-			return $this->error( 'rate_limited', 'Too many generation requests, please wait.', 429 );
-		}
-
-		$voice_raw = $plugin->settings()->get( 'brand_voice', array() );
-		$voice     = BrandVoice::from_settings( is_array( $voice_raw ) ? $voice_raw : array() );
-
-		try {
-			$result = $provider->generate_drafts( $context, $platforms, $voice );
-			$plugin->logger()->info(
-				'rest.generate',
-				'Generated drafts.',
-				array(
-					'product_id'    => $product_id,
-					'platforms'     => $platforms,
-					'input_tokens'  => $result->input_tokens,
-					'output_tokens' => $result->output_tokens,
-				)
-			);
-			return $this->ok( $result->to_array() );
-		} catch ( AIProviderException $e ) {
-			$plugin->logger()->error(
-				'rest.generate',
-				$e->getMessage(),
-				array( 'product_id' => $product_id )
-			);
-			return $this->error( 'ai_provider_failed', $e->getMessage(), 502 );
-		}
-	}
-
-	/**
-	 * POST /save-drafts — persist user-edited drafts to post meta.
+	 * Reads the source content (short description, image, tags, permalink)
+	 * directly from the WooCommerce product on the server side — the caller
+	 * doesn't pass any copy. Tags become hashtags. The same payload goes to
+	 * every selected platform; each publisher handles its own truncation /
+	 * formatting.
 	 *
-	 * @param WP_REST_Request $request REST request.
-	 * @return WP_REST_Response
-	 */
-	public function save_drafts( WP_REST_Request $request ): WP_REST_Response {
-		$product_id = (int) ( $request['product_id'] ?? 0 );
-		if ( 0 === $product_id ) {
-			return $this->error( 'missing_product', 'product_id is required.', 400 );
-		}
-
-		$raw_drafts = $request['drafts'] ?? array();
-		if ( ! is_array( $raw_drafts ) ) {
-			return $this->error( 'invalid_drafts', 'drafts must be an object keyed by platform.', 400 );
-		}
-
-		$sanitized = array();
-		foreach ( $raw_drafts as $platform => $draft ) {
-			if ( ! is_string( $platform ) || ! is_array( $draft ) ) {
-				continue;
-			}
-			$hashtags                               = ( isset( $draft['hashtags'] ) && is_array( $draft['hashtags'] ) )
-				? array_values( array_map( 'sanitize_text_field', array_map( 'strval', $draft['hashtags'] ) ) )
-				: array();
-			$sanitized[ sanitize_key( $platform ) ] = array(
-				'content'  => wp_kses_post( (string) ( $draft['content'] ?? '' ) ),
-				'hashtags' => $hashtags,
-			);
-		}
-
-		update_post_meta( $product_id, '_apex_cast_drafts', $sanitized );
-
-		return $this->ok(
-			array(
-				'product_id' => $product_id,
-				'drafts'     => $sanitized,
-			)
-		);
-	}
-
-	/**
-	 * POST /send — publish a per-platform set of drafts via the publisher registry.
-	 *
-	 * Dispatches each requested platform to its registered publisher. Aggregates
-	 * the per-platform results into one job row and one response. Overall job
-	 * status is `sent` if all platforms succeeded, `partial` if some did and
-	 * some didn't, `failed` if none did.
+	 * Aggregates the per-platform results into one job row and one response.
+	 * Overall job status is `sent` if all platforms succeeded, `partial` if
+	 * some did and some didn't, `failed` if none did.
 	 *
 	 * @param WP_REST_Request $request REST request.
 	 * @return WP_REST_Response
@@ -284,13 +170,7 @@ final class RestController {
 			return $this->error( 'missing_product', 'product_id is required.', 400 );
 		}
 
-		$drafts_raw = $request['drafts'] ?? array();
-		if ( ! is_array( $drafts_raw ) ) {
-			return $this->error( 'invalid_drafts', 'drafts must be an object keyed by platform.', 400 );
-		}
-
-		$platforms_raw = $request['platforms'] ?? array_keys( $drafts_raw );
-		$platforms     = $this->coerce_platforms( $platforms_raw );
+		$platforms = $this->coerce_platforms( $request['platforms'] ?? array() );
 		if ( empty( $platforms ) ) {
 			return $this->error( 'no_platforms', 'At least one platform is required.', 400 );
 		}
@@ -300,16 +180,29 @@ final class RestController {
 			return $this->error( 'product_not_found', 'Product not found.', 404 );
 		}
 
+		// Caption: the product's short description, falling back to the title
+		// when the short description is empty so we never publish a blank caption.
+		$content = '' !== trim( $context->short_description )
+			? $context->short_description
+			: $context->title;
+
+		$hashtags     = $this->product_tags_to_hashtags( $context->tags );
 		$scheduled_at = isset( $request['scheduled_at'] ) ? (string) $request['scheduled_at'] : null;
 		$registry     = $plugin->publisher_registry();
 		$repo         = $plugin->job_repository();
 
-		$job_id = $repo->create(
+		$snapshot = array(
+			'content'  => $content,
+			'hashtags' => $hashtags,
+			'image'    => $context->featured_image,
+			'link'     => $context->permalink,
+		);
+		$job_id   = $repo->create(
 			$product_id,
 			get_current_user_id(),
 			'multi',
 			$platforms,
-			$drafts_raw
+			$snapshot
 		);
 
 		$platform_results = array();
@@ -317,23 +210,12 @@ final class RestController {
 		$failure_count    = 0;
 
 		foreach ( $platforms as $platform ) {
-			$draft = $drafts_raw[ $platform ] ?? null;
-			if ( ! is_array( $draft ) ) {
-				$platform_results[ $platform ] = array(
-					'success'       => false,
-					'platform'      => $platform,
-					'error_message' => 'No draft was provided for this platform.',
-				);
-				++$failure_count;
-				continue;
-			}
-
 			$publisher = $registry->get( $platform );
 			if ( null === $publisher ) {
 				$platform_results[ $platform ] = array(
 					'success'       => false,
 					'platform'      => $platform,
-					'error_message' => sprintf( 'No publisher implementation is available yet for "%s".', $platform ),
+					'error_message' => sprintf( 'No publisher implementation is available for "%s".', $platform ),
 				);
 				++$failure_count;
 				continue;
@@ -349,14 +231,10 @@ final class RestController {
 				continue;
 			}
 
-			$hashtags = ( isset( $draft['hashtags'] ) && is_array( $draft['hashtags'] ) )
-				? array_values( array_map( 'strval', $draft['hashtags'] ) )
-				: array();
-
 			$publish_request = new PublishRequest(
 				$product_id,
 				$platform,
-				(string) ( $draft['content'] ?? '' ),
+				$content,
 				$hashtags,
 				$context->permalink,
 				$context->featured_image,
@@ -414,6 +292,26 @@ final class RestController {
 	}
 
 	/**
+	 * Convert WooCommerce product tags into platform-ready hashtags.
+	 *
+	 * Each tag is lowercased and stripped of every non-alphanumeric character,
+	 * then prefixed with '#'. Empty tags drop out. Order preserved.
+	 *
+	 * @param string[] $tags Raw product tag names from WooCommerce.
+	 * @return string[]
+	 */
+	private function product_tags_to_hashtags( array $tags ): array {
+		$hashtags = array();
+		foreach ( $tags as $tag ) {
+			$normalized = preg_replace( '/[^a-zA-Z0-9]/', '', (string) $tag );
+			if ( is_string( $normalized ) && '' !== $normalized ) {
+				$hashtags[] = '#' . strtolower( $normalized );
+			}
+		}
+		return $hashtags;
+	}
+
+	/**
 	 * GET /jobs/:id — fetch a single job row.
 	 *
 	 * @param WP_REST_Request $request REST request.
@@ -444,32 +342,22 @@ final class RestController {
 	}
 
 	/**
-	 * POST /test-connection — ping the AI provider or a specific platform publisher.
+	 * POST /test-connection — ping a specific platform publisher.
 	 *
-	 * Accepts a `target` field:
-	 *   - "ai" tests the active AI provider
-	 *   - "facebook" / "instagram" / "pinterest" / "x" / "reddit" tests that platform's publisher
+	 * Accepts a `target` field: one of "facebook" / "instagram" / "pinterest".
 	 *
 	 * @param WP_REST_Request $request REST request.
 	 * @return WP_REST_Response
 	 */
 	public function test_connection( WP_REST_Request $request ): WP_REST_Response {
-		$raw_target = $request['target'] ?? $request['provider_type'] ?? 'ai';
+		$raw_target = $request['target'] ?? $request['provider_type'] ?? '';
 		$target     = sanitize_key( (string) $raw_target );
-
-		if ( 'ai' === $target ) {
-			$provider = Plugin::instance()->ai_provider();
-			if ( null === $provider ) {
-				return $this->error( 'not_configured', 'AI provider is not configured.', 400 );
-			}
-			return $this->ok( $provider->test_connection()->to_array() );
-		}
 
 		$publisher = Plugin::instance()->publisher_registry()->get( $target );
 		if ( null === $publisher ) {
 			return $this->error(
 				'unknown_target',
-				sprintf( 'No publisher is available yet for "%s".', $target ),
+				sprintf( 'No publisher is available for "%s".', $target ),
 				400
 			);
 		}
@@ -994,21 +882,6 @@ final class RestController {
 			}
 		}
 		return array_values( array_unique( $cleaned ) );
-	}
-
-	/**
-	 * Per-user hourly rate limit for the /generate endpoint.
-	 *
-	 * @return bool True when over budget.
-	 */
-	private function is_rate_limited(): bool {
-		$key   = self::RATE_KEY_PREFIX . get_current_user_id();
-		$count = (int) get_transient( $key );
-		if ( $count >= self::GENERATE_PER_HOUR ) {
-			return true;
-		}
-		set_transient( $key, $count + 1, HOUR_IN_SECONDS );
-		return false;
 	}
 
 	/**

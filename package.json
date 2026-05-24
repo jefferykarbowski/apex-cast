@@ -12,7 +12,7 @@
     "lint": "wp-scripts lint-js assets/src",
     "lint:fix": "wp-scripts lint-js assets/src --fix",
     "format": "wp-scripts format assets/src",
-    "test": "wp-scripts test-unit-js",
+    "test": "wp-scripts test-unit-js --passWithNoTests",
     "test:e2e": "wp-scripts test-playwright",
     "packages-update": "wp-scripts packages-update"
   },

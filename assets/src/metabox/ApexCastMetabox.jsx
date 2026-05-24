@@ -1,41 +1,27 @@
 /**
- * Main metabox React component — orchestrates state, REST calls, and child components.
+ * Apex Cast metabox — one-click broadcast.
  *
- * @package
+ * Shows a preview of what will be sent (product's short description + featured
+ * image + hashtags derived from product tags), lets the user pick platforms,
+ * and broadcasts. No AI generation, no draft editor — server reads the
+ * canonical product fields on send.
  */
 
-import { useReducer, useCallback } from '@wordpress/element';
-import { __ } from '@wordpress/i18n';
+import { useState, useCallback } from '@wordpress/element';
+import { __, sprintf, _n } from '@wordpress/i18n';
 
 import PlatformPicker from './PlatformPicker';
-import PlatformCard from './PlatformCard';
-import SendBar from './SendBar';
-import { reducer, INITIAL_STATE } from './reducer';
-import { generateDrafts, sendDrafts } from './api';
+import { sendProduct } from './api';
 
 /**
- * Build the initial reducer state from the PHP-supplied bootstrap data.
+ * Format a WooCommerce product tag as a hashtag.
  *
- * @param {Object} bootstrap The `window.APEX_CAST_DATA` shape.
- * @return {Object} Initial state for `useReducer`.
+ * @param {string} tag Raw tag string.
+ * @return {string} Lowercased, alphanumeric-only hashtag (e.g. "#viciousfun").
  */
-function buildInitialState(bootstrap) {
-	const initialDrafts =
-		bootstrap.initialDrafts && typeof bootstrap.initialDrafts === 'object'
-			? bootstrap.initialDrafts
-			: {};
-	const defaults =
-		Array.isArray(bootstrap.defaultPlatforms) &&
-		bootstrap.defaultPlatforms.length > 0
-			? bootstrap.defaultPlatforms
-			: ['facebook'];
-
-	return {
-		...INITIAL_STATE,
-		selectedPlatforms: defaults,
-		drafts: initialDrafts,
-		status: Object.keys(initialDrafts).length > 0 ? 'drafted' : 'empty',
-	};
+function tagToHashtag(tag) {
+	const stripped = String(tag).replace(/[^a-zA-Z0-9]/g, '');
+	return stripped ? `#${stripped.toLowerCase()}` : '';
 }
 
 /**
@@ -47,63 +33,54 @@ function buildInitialState(bootstrap) {
  */
 export default function ApexCastMetabox({ bootstrapData }) {
 	const productId = bootstrapData.productId || 0;
-	const supportedPlatforms = bootstrapData.supportedPlatforms || [];
+	const shortDescription = bootstrapData.shortDescription || '';
+	const featuredImage = bootstrapData.featuredImage || '';
+	const productTags = Array.isArray(bootstrapData.tags)
+		? bootstrapData.tags
+		: [];
+	const supportedPlatforms = Array.isArray(bootstrapData.supportedPlatforms)
+		? bootstrapData.supportedPlatforms
+		: [];
+	const configuredPlatforms = Array.isArray(bootstrapData.configuredPlatforms)
+		? bootstrapData.configuredPlatforms
+		: [];
 
-	const [state, dispatch] = useReducer(
-		reducer,
-		bootstrapData,
-		buildInitialState
+	// Default to whichever platforms are *both* enabled in settings and
+	// actually configured (connected). If none are configured, fall back to
+	// the user's default selections so the picker still shows.
+	const defaultSelected = (
+		Array.isArray(bootstrapData.defaultPlatforms)
+			? bootstrapData.defaultPlatforms
+			: []
+	).filter((p) => configuredPlatforms.includes(p));
+
+	const [selectedPlatforms, setSelectedPlatforms] = useState(
+		defaultSelected.length > 0
+			? defaultSelected
+			: configuredPlatforms.slice(0, 3)
 	);
+	const [status, setStatus] = useState('idle');
+	const [error, setError] = useState(null);
+	const [results, setResults] = useState({});
 
-	const isGenerating = state.status === 'generating';
-	const isSending = state.status === 'sending';
-
-	const handleGenerate = useCallback(async () => {
-		if (!productId || state.selectedPlatforms.length === 0) {
-			return;
-		}
-		dispatch({ type: 'GENERATE_START' });
-		try {
-			const result = await generateDrafts(
-				productId,
-				state.selectedPlatforms
-			);
-			dispatch({
-				type: 'GENERATE_SUCCESS',
-				drafts: result.drafts || {},
-				notes: result.notes || '',
-			});
-		} catch (error) {
-			dispatch({
-				type: 'GENERATE_FAILURE',
-				error: error.message,
-			});
-		}
-	}, [productId, state.selectedPlatforms]);
+	const hashtags = productTags.map(tagToHashtag).filter((h) => h !== '');
 
 	const handleSend = useCallback(async () => {
-		if (!productId) {
+		if (!productId || selectedPlatforms.length === 0) {
 			return;
 		}
-		const platformsWithDrafts = state.selectedPlatforms.filter((platform) =>
-			Boolean(state.drafts[platform])
-		);
-		if (platformsWithDrafts.length === 0) {
-			return;
-		}
-		dispatch({ type: 'SEND_START' });
+		setStatus('sending');
+		setError(null);
+		setResults({});
 		try {
-			const result = await sendDrafts(
-				productId,
-				state.drafts,
-				platformsWithDrafts,
-				state.postType
-			);
-			dispatch({ type: 'SEND_SUCCESS', jobId: result.job_id });
-		} catch (error) {
-			dispatch({ type: 'SEND_FAILURE', error: error.message });
+			const result = await sendProduct(productId, selectedPlatforms);
+			setResults(result.platform_results || {});
+			setStatus('done');
+		} catch (e) {
+			setError(e.message);
+			setStatus('error');
 		}
-	}, [productId, state.selectedPlatforms, state.drafts, state.postType]);
+	}, [productId, selectedPlatforms]);
 
 	if (!productId) {
 		return (
@@ -116,76 +93,118 @@ export default function ApexCastMetabox({ bootstrapData }) {
 		);
 	}
 
-	const platformsWithDrafts = state.selectedPlatforms.filter((platform) =>
-		Boolean(state.drafts[platform])
-	);
+	if (!shortDescription) {
+		return (
+			<p className="apex-cast-empty-product">
+				{__(
+					'Add a short description to this product (or it will use the product title) before broadcasting.',
+					'apex-cast'
+				)}
+			</p>
+		);
+	}
+
+	if (configuredPlatforms.length === 0) {
+		return (
+			<p className="apex-cast-empty-product">
+				{__(
+					'Connect at least one platform under Settings → Apex Cast → Platforms to start broadcasting.',
+					'apex-cast'
+				)}
+			</p>
+		);
+	}
+
+	const sending = status === 'sending';
+	const platformCount = selectedPlatforms.length;
+	const sendLabel = sending
+		? __('Sending…', 'apex-cast')
+		: sprintf(
+				/* translators: %d: number of platforms. */
+				_n(
+					'Send to %d platform',
+					'Send to %d platforms',
+					platformCount,
+					'apex-cast'
+				),
+				platformCount
+			);
 
 	return (
 		<div className="apex-cast-metabox">
 			<PlatformPicker
 				supported={supportedPlatforms}
-				selected={state.selectedPlatforms}
-				onChange={(platforms) =>
-					dispatch({ type: 'SET_PLATFORMS', platforms })
-				}
-				disabled={isGenerating || isSending}
+				selected={selectedPlatforms}
+				onChange={setSelectedPlatforms}
+				disabled={sending}
 			/>
+
+			<div className="apex-cast-preview">
+				{featuredImage && (
+					<img
+						className="apex-cast-preview-image"
+						src={featuredImage}
+						alt=""
+					/>
+				)}
+				<p className="apex-cast-preview-caption">{shortDescription}</p>
+				{hashtags.length > 0 && (
+					<p className="apex-cast-preview-hashtags">
+						{hashtags.join(' ')}
+					</p>
+				)}
+			</div>
 
 			<button
 				type="button"
-				className="button button-primary apex-cast-generate"
-				onClick={handleGenerate}
-				disabled={isGenerating || state.selectedPlatforms.length === 0}
+				className="button button-primary apex-cast-send-button"
+				onClick={handleSend}
+				disabled={sending || platformCount === 0}
 			>
-				{isGenerating
-					? __('Generating…', 'apex-cast')
-					: __('Generate social drafts', 'apex-cast')}
+				{sendLabel}
 			</button>
 
-			{state.error && (
+			{status === 'error' && error && (
 				<div className="notice notice-error inline apex-cast-error">
-					<p>{state.error}</p>
+					<p>{error}</p>
 				</div>
 			)}
 
-			{state.notes && (
-				<p className="apex-cast-notes">
-					<em>{__('Creative angle:', 'apex-cast')}</em> {state.notes}
-				</p>
-			)}
-
-			{platformsWithDrafts.map((platform) => (
-				<PlatformCard
-					key={platform}
-					platform={platform}
-					draft={state.drafts[platform]}
-					onChange={(content) =>
-						dispatch({
-							type: 'EDIT_DRAFT',
-							platform,
-							content,
-						})
-					}
-					disabled={isSending}
-				/>
-			))}
-
-			{platformsWithDrafts.length > 0 && state.status !== 'sent' && (
-				<SendBar
-					postType={state.postType}
-					onPostTypeChange={(postType) =>
-						dispatch({ type: 'SET_POST_TYPE', postType })
-					}
-					onSend={handleSend}
-					sending={isSending}
-					platformCount={platformsWithDrafts.length}
-				/>
-			)}
-
-			{state.status === 'sent' && (
-				<p className="apex-cast-sent">
-					{__('Sent to scheduler.', 'apex-cast')}
-				</p>
+			{status === 'done' && Object.keys(results).length > 0 && (
+				<ul className="apex-cast-results">
+					{Object.entries(results).map(([platform, result]) => (
+						<li
+							key={platform}
+							className={
+								result.success
+									? 'apex-cast-result success'
+									: 'apex-cast-result failure'
+							}
+						>
+							<strong>
+								{result.success ? '✓' : '✗'} {platform}
+							</strong>
+							{result.success && result.platform_url && (
+								<>
+									{' — '}
+									<a
+										href={result.platform_url}
+										target="_blank"
+										rel="noopener noreferrer"
+									>
+										{__('view post', 'apex-cast')}
+									</a>
+								</>
+							)}
+							{!result.success && result.error_message && (
+								<span className="apex-cast-result-error">
+									{' — '}
+									{result.error_message}
+								</span>
+							)}
+						</li>
+					))}
+				</ul>
 			)}
 		</div>
 	);

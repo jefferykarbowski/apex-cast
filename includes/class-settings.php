@@ -128,30 +128,17 @@ final class Settings {
 	 */
 	public static function defaults(): array {
 		return array(
-			'version'     => 2,
-			'store'       => array(
+			'version'   => 3,
+			'store'     => array(
 				'name'              => '',
 				'description'       => '',
 				'default_platforms' => array( 'facebook', 'instagram', 'pinterest' ),
 			),
-			'brand_voice' => array(
-				'tone'             => '',
-				'voice_notes'      => '',
-				'hashtag_strategy' => 'moderate',
-				'do_not_use'       => array(),
-			),
-			'ai_provider' => array(
-				'active'    => 'anthropic',
-				'anthropic' => array(
-					'api_key_encrypted' => '',
-					'model'             => 'claude-sonnet-4-6',
-					'max_tokens'        => 1024,
-				),
-			),
-			// Per-platform publisher configuration. Each platform's substructure is
-			// owned by its publisher class (Phase 5+); the keys present here are the
-			// minimum a fresh install needs so the settings UI has something to bind to.
-			'platforms'   => array(
+			// Per-platform publisher configuration. Each platform's substructure
+			// is owned by its publisher class; the keys present here are the
+			// minimum a fresh install needs so the settings UI has something to
+			// bind to.
+			'platforms' => array(
 				'facebook'  => array(
 					'user_access_token_encrypted' => '',
 					'user_token_expires_at'       => 0,
@@ -169,15 +156,6 @@ final class Settings {
 					'refresh_token_encrypted' => '',
 					'expires_at'              => 0,
 					'board_id'                => '',
-				),
-				'x'         => array(
-					'access_token_encrypted'        => '',
-					'access_token_secret_encrypted' => '',
-				),
-				'reddit'    => array(
-					'access_token_encrypted'  => '',
-					'refresh_token_encrypted' => '',
-					'subreddit'               => '',
 				),
 			),
 		);

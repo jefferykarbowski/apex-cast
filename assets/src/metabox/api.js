@@ -3,8 +3,6 @@
  *
  * Reads `window.APEX_CAST_DATA` for `restUrl` and `nonce` at call time so unit
  * tests that load this module without a `window` global can still import it.
- *
- * @package
  */
 
 /**
@@ -25,7 +23,7 @@ function bootstrap() {
  * `{ ok, data, error }` envelope.
  *
  * @param {string}  method HTTP method.
- * @param {string}  path   Path under the REST namespace (e.g. "/generate").
+ * @param {string}  path   Path under the REST namespace (e.g. "/send").
  * @param {?Object} body   Optional JSON-encodable body.
  * @return {Promise<*>} Resolves to `data`; rejects with the envelope's error message.
  */
@@ -57,25 +55,16 @@ async function request(method, path, body) {
 	return payload.data;
 }
 
-export function generateDrafts(productId, platforms) {
-	return request('POST', '/generate', {
-		product_id: productId,
-		platforms,
-	});
-}
-
-export function saveDrafts(productId, drafts) {
-	return request('POST', '/save-drafts', {
-		product_id: productId,
-		drafts,
-	});
-}
-
-export function sendDrafts(productId, drafts, platforms, postType) {
+/**
+ * Broadcast a product to the selected platforms.
+ *
+ * @param {number}   productId WooCommerce product ID.
+ * @param {string[]} platforms Platform identifiers to send to.
+ * @return {Promise<Object>} The send result envelope's data payload.
+ */
+export function sendProduct(productId, platforms) {
 	return request('POST', '/send', {
 		product_id: productId,
-		drafts,
 		platforms,
-		post_type: postType,
 	});
 }

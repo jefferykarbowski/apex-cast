@@ -9,7 +9,6 @@ declare( strict_types=1 );
 
 namespace ApexChute\ApexCast\Admin;
 
-use ApexChute\ApexCast\AI\AnthropicProvider;
 use ApexChute\ApexCast\Plugin;
 use WP_Post;
 
@@ -107,7 +106,7 @@ final class Admin {
 				array(
 					'restUrl'   => esc_url_raw( rest_url( 'apex-cast/v1' ) ),
 					'nonce'     => wp_create_nonce( 'wp_rest' ),
-					'platforms' => AnthropicProvider::SUPPORTED_PLATFORMS,
+					'platforms' => array_keys( Plugin::instance()->publisher_registry()->all() ),
 				)
 			);
 			return;
@@ -124,18 +123,28 @@ final class Admin {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Reading the standard wp-admin post ID query var for display only; no state changes.
 		$product_id = isset( $_GET['post'] ) ? (int) $_GET['post'] : 0;
 
-		$drafts = $product_id > 0 ? get_post_meta( $product_id, '_apex_cast_drafts', true ) : array();
-		if ( ! is_array( $drafts ) ) {
-			$drafts = array();
-		}
-
 		$last_sent_at = $product_id > 0 ? (int) get_post_meta( $product_id, '_apex_cast_last_sent_at', true ) : 0;
 		$last_job_id  = $product_id > 0 ? (int) get_post_meta( $product_id, '_apex_cast_last_job_id', true ) : 0;
 
 		$defaults_raw = Plugin::instance()->settings()->get( 'store.default_platforms', array() );
 		$defaults     = is_array( $defaults_raw ) ? array_values( array_filter( array_map( 'strval', $defaults_raw ) ) ) : array();
 
-		$configured_platforms = Plugin::instance()->publisher_registry()->configured_platforms();
+		$plugin               = Plugin::instance();
+		$configured_platforms = $plugin->publisher_registry()->configured_platforms();
+		$supported_platforms  = array_keys( $plugin->publisher_registry()->all() );
+
+		// Build the product preview the metabox shows — what *will* be sent.
+		$short_description = '';
+		$featured_image    = '';
+		$tags              = array();
+		if ( $product_id > 0 ) {
+			$context = $plugin->product_context_builder()->build( $product_id );
+			if ( null !== $context ) {
+				$short_description = '' !== trim( $context->short_description ) ? $context->short_description : $context->title;
+				$featured_image    = $context->featured_image;
+				$tags              = $context->tags;
+			}
+		}
 
 		$this->enqueue_entry( 'metabox', $base_path, $base_url );
 		wp_localize_script(
@@ -145,12 +154,14 @@ final class Admin {
 				'restUrl'             => esc_url_raw( rest_url( 'apex-cast/v1' ) ),
 				'nonce'               => wp_create_nonce( 'wp_rest' ),
 				'productId'           => $product_id,
-				'initialDrafts'       => $drafts,
+				'shortDescription'    => $short_description,
+				'featuredImage'       => $featured_image,
+				'tags'                => $tags,
 				'lastSentAt'          => $last_sent_at,
 				'lastJobId'           => $last_job_id,
 				'defaultPlatforms'    => $defaults,
 				'configuredPlatforms' => $configured_platforms,
-				'supportedPlatforms'  => AnthropicProvider::SUPPORTED_PLATFORMS,
+				'supportedPlatforms'  => $supported_platforms,
 			)
 		);
 	}
