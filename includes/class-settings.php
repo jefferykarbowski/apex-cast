@@ -153,11 +153,15 @@ final class Settings {
 			// minimum a fresh install needs so the settings UI has something to bind to.
 			'platforms'   => array(
 				'facebook'  => array(
+					'user_access_token_encrypted' => '',
+					'user_token_expires_at'       => 0,
 					'page_id'                     => '',
+					'page_name'                   => '',
 					'page_access_token_encrypted' => '',
 				),
 				'instagram' => array(
 					'ig_business_account_id'      => '',
+					'username'                    => '',
 					'page_access_token_encrypted' => '',
 				),
 				'pinterest' => array(

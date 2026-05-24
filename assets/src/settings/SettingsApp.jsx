@@ -182,6 +182,143 @@ function renderPinterestRow({
 }
 
 /**
+ * Render the Facebook configuration row in the Platforms tab.
+ *
+ * One OAuth round-trip handles both Facebook *and* the linked Instagram, so
+ * this row owns the Connect / Disconnect / Test controls. The Instagram row
+ * is read-only and reflects whatever the FB OAuth flow captured.
+ *
+ * @param {Object}   args                    Render arguments.
+ * @param {Object}   args.settings           Current settings tree.
+ * @param {Function} args.runTest            Test-connection callback.
+ * @param {Function} args.disconnectFacebook Disconnect callback.
+ * @param {Function} args.renderTestResult   Renders the test-connection result.
+ * @param {Function} args.onStartConnect     "Connect Facebook" click handler.
+ * @return {Element} React element.
+ */
+function renderFacebookRow({
+	settings,
+	runTest,
+	disconnectFacebook,
+	renderTestResult,
+	onStartConnect,
+}) {
+	const fb = settings.platforms?.facebook || {};
+	const tokenSet = fb.page_access_token_set === true;
+
+	if (tokenSet) {
+		const pageName = fb.page_name || '';
+		return (
+			<>
+				<p>
+					<span className="apex-cast-test-result success">
+						{pageName
+							? `Connected to Facebook Page "${pageName}".`
+							: __('Connected to Facebook.', 'apex-cast')}
+					</span>
+				</p>
+				<p>
+					<button
+						type="button"
+						className="button"
+						onClick={() => runTest('facebook')}
+					>
+						{__('Test connection', 'apex-cast')}
+					</button>
+					{renderTestResult('facebook')}{' '}
+					<button
+						type="button"
+						className="button"
+						onClick={disconnectFacebook}
+					>
+						{__('Disconnect Facebook + Instagram', 'apex-cast')}
+					</button>
+				</p>
+			</>
+		);
+	}
+
+	return (
+		<>
+			<p>
+				<button
+					type="button"
+					className="button button-primary"
+					onClick={onStartConnect}
+				>
+					{__('Connect Facebook', 'apex-cast')}
+				</button>
+			</p>
+			<p className="description">
+				{__(
+					"Connects both the Facebook Page and the linked Instagram in one step. You'll authorize Apex Cast on Meta's consent screen.",
+					'apex-cast'
+				)}
+			</p>
+		</>
+	);
+}
+
+/**
+ * Render the Instagram row — read-only, reflects what the Meta OAuth captured.
+ *
+ * @param {Object}   args                  Render arguments.
+ * @param {Object}   args.settings         Current settings tree.
+ * @param {Function} args.runTest          Test-connection callback.
+ * @param {Function} args.renderTestResult Renders the test-connection result.
+ * @return {Element} React element.
+ */
+function renderInstagramRow({ settings, runTest, renderTestResult }) {
+	const ig = settings.platforms?.instagram || {};
+	const fb = settings.platforms?.facebook || {};
+	const fbTokenSet = fb.page_access_token_set === true;
+	const igTokenSet = ig.page_access_token_set === true;
+
+	if (!fbTokenSet) {
+		return (
+			<span className="apex-cast-test-result failure">
+				{__('Connect Facebook above to enable Instagram.', 'apex-cast')}
+			</span>
+		);
+	}
+
+	if (!igTokenSet || !ig.ig_business_account_id) {
+		return (
+			<span className="apex-cast-test-result failure">
+				{__(
+					'No Instagram Business / Creator account is linked to the connected Facebook Page.',
+					'apex-cast'
+				)}
+			</span>
+		);
+	}
+
+	const username = ig.username || '';
+
+	return (
+		<>
+			<p>
+				<span className="apex-cast-test-result success">
+					{username
+						? `Connected as @${username}.`
+						: __('Connected to Instagram.', 'apex-cast')}
+				</span>
+			</p>
+			<p>
+				<button
+					type="button"
+					className="button"
+					onClick={() => runTest('instagram')}
+				>
+					{__('Test connection', 'apex-cast')}
+				</button>
+				{renderTestResult('instagram')}
+			</p>
+		</>
+	);
+}
+
+/**
  * Main settings app.
  *
  * @param {Object} props
@@ -265,6 +402,26 @@ export default function SettingsApp({ bootstrapData }) {
 		}
 	}, []);
 
+	/**
+	 * Kick off the Meta OAuth flow. One flow connects both the Facebook Page
+	 * and the linked Instagram account.
+	 *
+	 * @return {Promise<void>}
+	 */
+	const startFacebookConnect = useCallback(async () => {
+		setError(null);
+		try {
+			const result = await startOAuth('facebook');
+			if (result && result.auth_url) {
+				window.location.href = result.auth_url;
+			} else {
+				setError('Server did not return an auth URL.');
+			}
+		} catch (e) {
+			setError(e.message);
+		}
+	}, []);
+
 	const update = useCallback((path, value) => {
 		setSettings((prev) => setPath(prev, path, value));
 		setSavedAt(null);
@@ -328,6 +485,46 @@ export default function SettingsApp({ bootstrapData }) {
 			setTestResult((prev) => {
 				const { pinterest, ...rest } = prev;
 				void pinterest;
+				return rest;
+			});
+			setSavedAt(Date.now());
+		} catch (e) {
+			setError(e.message);
+		}
+		setSaving(false);
+	}, []);
+
+	/**
+	 * Clear the Facebook + Instagram credentials by saving explicit nulls for
+	 * every secret field on both. The shared Page Access Token means both
+	 * platforms disconnect together.
+	 *
+	 * @return {Promise<void>}
+	 */
+	const disconnectFacebook = useCallback(async () => {
+		setSaving(true);
+		setError(null);
+		try {
+			const updated = await saveSettings({
+				platforms: {
+					facebook: {
+						user_access_token: null,
+						page_access_token: null,
+						page_id: '',
+						page_name: '',
+					},
+					instagram: {
+						page_access_token: null,
+						ig_business_account_id: '',
+						username: '',
+					},
+				},
+			});
+			setSettings(updated);
+			setTestResult((prev) => {
+				const { facebook, instagram, ...rest } = prev;
+				void facebook;
+				void instagram;
 				return rest;
 			});
 			setSavedAt(Date.now());
@@ -732,24 +929,41 @@ export default function SettingsApp({ bootstrapData }) {
 					</p>
 					<table className="form-table">
 						<tbody>
-							{PLATFORMS.map((p) => (
-								<tr key={p.id}>
-									<th>{p.label}</th>
-									<td>
-										{p.id === 'pinterest'
-											? renderPinterestRow({
-													settings,
-													update,
-													runTest,
-													disconnectPinterest,
-													renderTestResult,
-													onStartConnect:
-														startPinterestConnect,
-												})
-											: renderPlatformPlaceholder()}
-									</td>
-								</tr>
-							))}
+							{PLATFORMS.map((p) => {
+								let body;
+								if (p.id === 'pinterest') {
+									body = renderPinterestRow({
+										settings,
+										update,
+										runTest,
+										disconnectPinterest,
+										renderTestResult,
+										onStartConnect: startPinterestConnect,
+									});
+								} else if (p.id === 'facebook') {
+									body = renderFacebookRow({
+										settings,
+										runTest,
+										disconnectFacebook,
+										renderTestResult,
+										onStartConnect: startFacebookConnect,
+									});
+								} else if (p.id === 'instagram') {
+									body = renderInstagramRow({
+										settings,
+										runTest,
+										renderTestResult,
+									});
+								} else {
+									body = renderPlatformPlaceholder();
+								}
+								return (
+									<tr key={p.id}>
+										<th>{p.label}</th>
+										<td>{body}</td>
+									</tr>
+								);
+							})}
 						</tbody>
 					</table>
 				</>

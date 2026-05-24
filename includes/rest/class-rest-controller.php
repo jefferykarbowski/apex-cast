@@ -11,6 +11,7 @@ namespace ApexChute\ApexCast\Rest;
 
 use ApexChute\ApexCast\AI\AIProviderException;
 use ApexChute\ApexCast\AI\BrandVoice;
+use ApexChute\ApexCast\OAuth\MetaOAuth;
 use ApexChute\ApexCast\OAuth\OAuthStateStore;
 use ApexChute\ApexCast\OAuth\PinterestOAuth;
 use ApexChute\ApexCast\Plugin;
@@ -526,19 +527,28 @@ final class RestController {
 	public function oauth_start( WP_REST_Request $request ): WP_REST_Response {
 		$platform = sanitize_key( (string) $request['platform'] );
 
-		if ( 'pinterest' !== $platform ) {
+		if ( 'pinterest' === $platform ) {
+			$oauth = $this->build_pinterest_oauth();
+			if ( null === $oauth ) {
+				return $this->error(
+					'not_configured',
+					'Pinterest app credentials are not set. Define APEX_CAST_PINTEREST_CLIENT_ID and APEX_CAST_PINTEREST_CLIENT_SECRET in wp-config.php.',
+					400
+				);
+			}
+		} elseif ( 'facebook' === $platform ) {
+			$oauth = $this->build_meta_oauth();
+			if ( null === $oauth ) {
+				return $this->error(
+					'not_configured',
+					'Meta app credentials are not set. Define APEX_CAST_META_APP_ID and APEX_CAST_META_APP_SECRET in wp-config.php.',
+					400
+				);
+			}
+		} else {
 			return $this->error(
 				'unsupported_platform',
 				sprintf( 'OAuth is not yet implemented for "%s".', $platform ),
-				400
-			);
-		}
-
-		$oauth = $this->build_pinterest_oauth();
-		if ( null === $oauth ) {
-			return $this->error(
-				'not_configured',
-				'Pinterest app credentials are not set. Define APEX_CAST_PINTEREST_CLIENT_ID and APEX_CAST_PINTEREST_CLIENT_SECRET in wp-config.php.',
 				400
 			);
 		}
@@ -562,24 +572,24 @@ final class RestController {
 	 * @return void
 	 */
 	public function oauth_callback( WP_REST_Request $request ): void {
-		$platform      = sanitize_key( (string) $request['platform'] );
-		$code          = (string) ( $request['code'] ?? '' );
-		$state         = (string) ( $request['state'] ?? '' );
-		$pinterest_err = (string) ( $request['error'] ?? '' );
+		$platform     = sanitize_key( (string) $request['platform'] );
+		$code         = (string) ( $request['code'] ?? '' );
+		$state        = (string) ( $request['state'] ?? '' );
+		$provider_err = (string) ( $request['error'] ?? '' );
 
 		$settings_url = admin_url( 'options-general.php?page=apex-cast-settings' );
 
-		if ( 'pinterest' !== $platform ) {
+		if ( 'pinterest' !== $platform && 'facebook' !== $platform ) {
 			$this->finish_oauth_callback( $settings_url, $platform, 'unsupported_platform' );
 		}
 
-		if ( '' !== $pinterest_err ) {
+		if ( '' !== $provider_err ) {
 			Plugin::instance()->logger()->warn(
 				'rest.oauth_callback',
 				'Provider returned an error.',
 				array(
 					'platform' => $platform,
-					'error'    => $pinterest_err,
+					'error'    => $provider_err,
 				)
 			);
 			$this->finish_oauth_callback( $settings_url, $platform, 'provider_error' );
@@ -598,21 +608,36 @@ final class RestController {
 			$this->finish_oauth_callback( $settings_url, $platform, 'user_mismatch' );
 		}
 
+		if ( 'pinterest' === $platform ) {
+			$this->handle_pinterest_callback( $settings_url, $code );
+		} else {
+			$this->handle_facebook_callback( $settings_url, $code );
+		}
+	}
+
+	/**
+	 * Pinterest-specific arm of the OAuth callback. Exchanges the auth code,
+	 * stores the encrypted tokens, redirects back to the settings page.
+	 *
+	 * @param string $settings_url Settings-page URL for the redirect.
+	 * @param string $code         Authorization code.
+	 * @return void
+	 */
+	private function handle_pinterest_callback( string $settings_url, string $code ): void {
 		$oauth = $this->build_pinterest_oauth();
 		if ( null === $oauth ) {
-			$this->finish_oauth_callback( $settings_url, $platform, 'not_configured' );
+			$this->finish_oauth_callback( $settings_url, 'pinterest', 'not_configured' );
 		}
 
 		try {
-			$tokens = $oauth->exchange_code( $code, $this->oauth_callback_url( $platform ) );
+			$tokens = $oauth->exchange_code( $code, $this->oauth_callback_url( 'pinterest' ) );
 		} catch ( PublisherException $e ) {
-			Plugin::instance()->logger()->error( 'rest.oauth_callback', $e->getMessage(), array( 'platform' => $platform ) );
-			$this->finish_oauth_callback( $settings_url, $platform, 'token_exchange_failed' );
+			Plugin::instance()->logger()->error( 'rest.oauth_callback', $e->getMessage(), array( 'platform' => 'pinterest' ) );
+			$this->finish_oauth_callback( $settings_url, 'pinterest', 'token_exchange_failed' );
 		}
 
 		$settings_store = Plugin::instance()->settings();
 		$current        = $settings_store->all();
-
 		if ( ! isset( $current['platforms']['pinterest'] ) || ! is_array( $current['platforms']['pinterest'] ) ) {
 			$current['platforms']['pinterest'] = array();
 		}
@@ -624,9 +649,91 @@ final class RestController {
 		$current['platforms']['pinterest']['expires_at'] = $tokens['expires_in'] > 0 ? time() + $tokens['expires_in'] : 0;
 
 		$settings_store->save( $current );
-		Plugin::instance()->logger()->info( 'rest.oauth_callback', 'OAuth completed.', array( 'platform' => $platform ) );
+		Plugin::instance()->logger()->info( 'rest.oauth_callback', 'OAuth completed.', array( 'platform' => 'pinterest' ) );
+		$this->finish_oauth_callback( $settings_url, 'pinterest', 'success' );
+	}
 
-		$this->finish_oauth_callback( $settings_url, $platform, 'success' );
+	/**
+	 * Facebook (+ linked Instagram) arm of the OAuth callback. Runs the Meta
+	 * multi-step flow: code → short-lived UAT → long-lived UAT → Pages list →
+	 * IG account, then stores everything under `platforms.facebook.*` and
+	 * `platforms.instagram.*`.
+	 *
+	 * For Loren's single-Page case we auto-pick the first Page in the list.
+	 * Future iteration: present a Page picker when the user has more than one.
+	 *
+	 * @param string $settings_url Settings-page URL for the redirect.
+	 * @param string $code         Authorization code.
+	 * @return void
+	 */
+	private function handle_facebook_callback( string $settings_url, string $code ): void {
+		$oauth = $this->build_meta_oauth();
+		if ( null === $oauth ) {
+			$this->finish_oauth_callback( $settings_url, 'facebook', 'not_configured' );
+		}
+
+		try {
+			$short_lived = $oauth->exchange_code_for_user_token( $code, $this->oauth_callback_url( 'facebook' ) );
+			$long_lived  = $oauth->exchange_for_long_lived_token( $short_lived );
+			$pages       = $oauth->fetch_pages( $long_lived['access_token'] );
+		} catch ( PublisherException $e ) {
+			Plugin::instance()->logger()->error( 'rest.oauth_callback', $e->getMessage(), array( 'platform' => 'facebook' ) );
+			$this->finish_oauth_callback( $settings_url, 'facebook', 'token_exchange_failed' );
+		}
+
+		if ( empty( $pages ) ) {
+			Plugin::instance()->logger()->warn( 'rest.oauth_callback', 'No Facebook Pages returned for user.', array() );
+			$this->finish_oauth_callback( $settings_url, 'facebook', 'no_pages' );
+		}
+
+		// Auto-pick the first Page for now; multi-Page picker UI is a future enhancement.
+		$page = $pages[0];
+
+		try {
+			$ig = $oauth->fetch_instagram_account( $page['id'], $page['access_token'] );
+		} catch ( PublisherException $e ) {
+			Plugin::instance()->logger()->warn( 'rest.oauth_callback', 'IG lookup failed.', array( 'error' => $e->getMessage() ) );
+			$ig = null;
+		}
+
+		$settings_store = Plugin::instance()->settings();
+		$current        = $settings_store->all();
+
+		if ( ! isset( $current['platforms']['facebook'] ) || ! is_array( $current['platforms']['facebook'] ) ) {
+			$current['platforms']['facebook'] = array();
+		}
+		$current['platforms']['facebook']['user_access_token_encrypted'] = $settings_store->encrypt_secret( $long_lived['access_token'] );
+		$current['platforms']['facebook']['user_token_expires_at']       = $long_lived['expires_in'] > 0 ? time() + $long_lived['expires_in'] : 0;
+		$current['platforms']['facebook']['page_id']                     = $page['id'];
+		$current['platforms']['facebook']['page_name']                   = $page['name'];
+		$current['platforms']['facebook']['page_access_token_encrypted'] = $settings_store->encrypt_secret( $page['access_token'] );
+
+		if ( ! isset( $current['platforms']['instagram'] ) || ! is_array( $current['platforms']['instagram'] ) ) {
+			$current['platforms']['instagram'] = array();
+		}
+		if ( null !== $ig ) {
+			$current['platforms']['instagram']['ig_business_account_id']      = $ig['id'];
+			$current['platforms']['instagram']['username']                    = $ig['username'];
+			$current['platforms']['instagram']['page_access_token_encrypted'] = $settings_store->encrypt_secret( $page['access_token'] );
+		} else {
+			// No IG linked to this Page — clear any stale IG creds so the
+			// publisher correctly reports as not-configured.
+			$current['platforms']['instagram']['ig_business_account_id']      = '';
+			$current['platforms']['instagram']['username']                    = '';
+			$current['platforms']['instagram']['page_access_token_encrypted'] = '';
+		}
+
+		$settings_store->save( $current );
+		Plugin::instance()->logger()->info(
+			'rest.oauth_callback',
+			'Meta OAuth completed.',
+			array(
+				'page_id'       => $page['id'],
+				'has_instagram' => null !== $ig,
+			)
+		);
+
+		$this->finish_oauth_callback( $settings_url, 'facebook', 'success' );
 	}
 
 	/**
@@ -658,6 +765,27 @@ final class RestController {
 		}
 
 		return new PinterestOAuth( $client_id, $client_secret );
+	}
+
+	/**
+	 * Build a MetaOAuth instance from wp-config constants. Returns null when
+	 * either credential constant is missing or empty.
+	 *
+	 * @return MetaOAuth|null
+	 */
+	private function build_meta_oauth(): ?MetaOAuth {
+		$app_id     = defined( 'APEX_CAST_META_APP_ID' )
+			? (string) constant( 'APEX_CAST_META_APP_ID' )
+			: '';
+		$app_secret = defined( 'APEX_CAST_META_APP_SECRET' )
+			? (string) constant( 'APEX_CAST_META_APP_SECRET' )
+			: '';
+
+		if ( '' === $app_id || '' === $app_secret ) {
+			return null;
+		}
+
+		return new MetaOAuth( $app_id, $app_secret );
 	}
 
 	/**

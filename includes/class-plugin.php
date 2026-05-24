@@ -11,6 +11,8 @@ namespace ApexChute\ApexCast;
 
 use ApexChute\ApexCast\AI\AIProviderInterface;
 use ApexChute\ApexCast\Admin\Admin;
+use ApexChute\ApexCast\Publishers\FacebookPagePublisher;
+use ApexChute\ApexCast\Publishers\InstagramPublisher;
 use ApexChute\ApexCast\Publishers\PinterestPublisher;
 use ApexChute\ApexCast\Rest\RestController;
 
@@ -205,6 +207,8 @@ final class Plugin {
 			// registered; whether it's *configured* is the publisher's own
 			// judgement based on stored credentials.
 			$this->register_pinterest( $this->publisher_registry );
+			$this->register_facebook( $this->publisher_registry );
+			$this->register_instagram( $this->publisher_registry );
 
 			/**
 			 * Fires once per request after first-party publishers are registered,
@@ -231,6 +235,36 @@ final class Plugin {
 		$access_token = $this->settings()->get_secret( 'platforms.pinterest.access_token_encrypted' );
 		$board_id     = (string) $this->settings()->get( 'platforms.pinterest.board_id', '' );
 		$registry->register( new PinterestPublisher( $access_token, $board_id ) );
+	}
+
+	/**
+	 * Register the FacebookPagePublisher. Page Access Token + Page id are
+	 * captured during the Meta OAuth flow; missing credentials → publisher
+	 * self-reports as not_configured.
+	 *
+	 * @param PublisherRegistry $registry The registry to populate.
+	 * @return void
+	 */
+	private function register_facebook( PublisherRegistry $registry ): void {
+		$token     = $this->settings()->get_secret( 'platforms.facebook.page_access_token_encrypted' );
+		$page_id   = (string) $this->settings()->get( 'platforms.facebook.page_id', '' );
+		$page_name = (string) $this->settings()->get( 'platforms.facebook.page_name', '' );
+		$registry->register( new FacebookPagePublisher( $token, $page_id, $page_name ) );
+	}
+
+	/**
+	 * Register the InstagramPublisher. Uses the same Page Access Token as the
+	 * Facebook publisher (Meta vends one token per Page that grants both
+	 * Page-posting and IG-publishing for the linked account).
+	 *
+	 * @param PublisherRegistry $registry The registry to populate.
+	 * @return void
+	 */
+	private function register_instagram( PublisherRegistry $registry ): void {
+		$token         = $this->settings()->get_secret( 'platforms.instagram.page_access_token_encrypted' );
+		$ig_account_id = (string) $this->settings()->get( 'platforms.instagram.ig_business_account_id', '' );
+		$username      = (string) $this->settings()->get( 'platforms.instagram.username', '' );
+		$registry->register( new InstagramPublisher( $token, $ig_account_id, $username ) );
 	}
 
 	/**
