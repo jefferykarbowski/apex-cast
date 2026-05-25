@@ -10,6 +10,7 @@ declare( strict_types=1 );
 namespace ApexChute\ApexCast\Publishers;
 
 use ApexChute\ApexCast\Support\TestConnectionResult;
+use Closure;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
@@ -19,10 +20,10 @@ use Psr\Http\Message\ResponseInterface;
 /**
  * Publishes pins to Pinterest via the v5 API.
  *
- * Phase 5 takes the access token as plain input (the user pastes one generated
- * from the Pinterest Developer dashboard, or via a manual one-off OAuth flow).
- * Phase 6 will add a proper "Connect Pinterest" OAuth UI plus automatic
- * refresh-token handling.
+ * Phase 9 introduces per-tag board routing: each WC `product_tag` can be mapped
+ * to a Pinterest board id, and optionally configured to auto-create a board on
+ * the first send when no mapping exists. The legacy `board_id` becomes the
+ * default fallback when no tag routes resolve.
  *
  * Pinterest API docs: https://developers.pinterest.com/docs/api/v5/
  */
@@ -48,27 +49,71 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 	private string $access_token;
 
 	/**
-	 * Pinterest board ID to pin to.
+	 * Default Pinterest board id used when no per-tag mapping resolves.
 	 *
 	 * @var string
 	 */
-	private string $board_id;
+	private string $default_board_id;
+
+	/**
+	 * WC product_tag slug → Pinterest board id.
+	 *
+	 * @var array<string, string>
+	 */
+	private array $tag_board_map;
+
+	/**
+	 * WC product_tag slug → bool. When true and no mapping exists for that
+	 * slug, the publisher will auto-create a board on first send.
+	 *
+	 * @var array<string, bool>
+	 */
+	private array $tag_auto_create;
+
+	/**
+	 * Optional service used to auto-create boards when `tag_auto_create` is
+	 * true for a slug with no existing mapping.
+	 *
+	 * @var PinterestBoardService|null
+	 */
+	private ?PinterestBoardService $board_service;
+
+	/**
+	 * Optional callback invoked after a successful auto-create so the wiring
+	 * layer can persist the new mapping back to settings. Signature:
+	 * `function(string $slug, string $new_board_id): void`.
+	 *
+	 * @var Closure|null
+	 */
+	private ?Closure $on_auto_create;
 
 	/**
 	 * Constructor.
 	 *
-	 * @param string               $access_token Plaintext Pinterest API access token.
-	 * @param string               $board_id     Target Pinterest board ID.
-	 * @param ClientInterface|null $client       Optional Guzzle client override for tests.
+	 * @param string                     $default_board_id Default Pinterest board id (fallback when no tag resolves).
+	 * @param array<string, string>      $tag_board_map    WC product_tag slug → Pinterest board id.
+	 * @param array<string, bool>        $tag_auto_create  WC product_tag slug → bool: auto-create on first send.
+	 * @param PinterestBoardService|null $board_service    Optional board service for auto-create lookups.
+	 * @param Closure|null               $on_auto_create   Optional callback invoked on successful auto-create.
+	 * @param string                     $access_token     Plaintext Pinterest API access token.
+	 * @param ClientInterface|null       $client           Optional Guzzle client override for tests.
 	 */
 	public function __construct(
+		string $default_board_id,
+		array $tag_board_map,
+		array $tag_auto_create,
+		?PinterestBoardService $board_service,
+		?Closure $on_auto_create,
 		string $access_token,
-		string $board_id,
 		?ClientInterface $client = null
 	) {
-		$this->access_token = $access_token;
-		$this->board_id     = $board_id;
-		$this->client       = $client ?? new Client( array( 'timeout' => 30 ) );
+		$this->default_board_id = $default_board_id;
+		$this->tag_board_map    = $tag_board_map;
+		$this->tag_auto_create  = $tag_auto_create;
+		$this->board_service    = $board_service;
+		$this->on_auto_create   = $on_auto_create;
+		$this->access_token     = $access_token;
+		$this->client           = $client ?? new Client( array( 'timeout' => 30 ) );
 	}
 
 	/**
@@ -81,11 +126,12 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 	/**
 	 * {@inheritDoc}
 	 *
-	 * Returns true only when both an access token and a board ID are present —
-	 * publishing requires both.
+	 * Returns true when an access token is present AND there is at least one
+	 * destination configured (either a default board id, or any tag mapping).
 	 */
 	public function is_configured(): bool {
-		return '' !== $this->access_token && '' !== $this->board_id;
+		return '' !== $this->access_token
+			&& ( '' !== $this->default_board_id || array() !== $this->tag_board_map );
 	}
 
 	/**
@@ -139,8 +185,21 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 			throw PublisherException::not_configured( self::PLATFORM_ID );
 		}
 
+		try {
+			$board_id = $this->resolve_board_id( $request );
+		} catch ( PublisherException $e ) {
+			return PublishResult::failure_for( self::PLATFORM_ID, $e->getMessage() );
+		}
+
+		if ( '' === $board_id ) {
+			return PublishResult::failure_for(
+				self::PLATFORM_ID,
+				'No destination board configured for this product.'
+			);
+		}
+
 		$body = array(
-			'board_id'     => $this->board_id,
+			'board_id'     => $board_id,
 			'description'  => $this->build_description( $request ),
 			'link'         => $request->product_url,
 			'alt_text'     => $this->truncate( $request->content, self::ALT_TEXT_MAX ),
@@ -170,6 +229,76 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 			$pin_id,
 			sprintf( 'https://www.pinterest.com/pin/%s/', $pin_id )
 		);
+	}
+
+	/**
+	 * Resolve the destination board id for a publish request.
+	 *
+	 * Precedence:
+	 *   1. Explicit per-publish `board_id_override` (the metabox "Pin to"
+	 *      dropdown). When present and non-empty, always wins — no tag lookup,
+	 *      no auto-create.
+	 *   2. Tag routing: walk the request's `tag_slugs` in order. First slug
+	 *      with an explicit mapping wins. If a slug has `tag_auto_create`
+	 *      enabled and a board service is available, a new public board is
+	 *      created and the mapping is cached on this instance for the rest of
+	 *      the request (and persisted via the `on_auto_create` callback when
+	 *      one is supplied).
+	 *   3. Configured default board id.
+	 *
+	 * @param PublishRequest $request Normalized publish request.
+	 * @return string Board id (may be empty when nothing is configured).
+	 *
+	 * @throws PublisherException When auto-creation fails (bubbles from the board service).
+	 */
+	public function resolve_board_id( PublishRequest $request ): string {
+		$override = isset( $request->platform_options['board_id_override'] )
+			? (string) $request->platform_options['board_id_override']
+			: '';
+		if ( '' !== $override ) {
+			return $override;
+		}
+
+		$slugs = isset( $request->platform_options['tag_slugs'] )
+			&& is_array( $request->platform_options['tag_slugs'] )
+				? $request->platform_options['tag_slugs']
+				: array();
+
+		foreach ( $slugs as $raw_slug ) {
+			$slug = (string) $raw_slug;
+			if ( '' === $slug ) {
+				continue;
+			}
+
+			if ( isset( $this->tag_board_map[ $slug ] ) && '' !== $this->tag_board_map[ $slug ] ) {
+				return (string) $this->tag_board_map[ $slug ];
+			}
+
+			if (
+				isset( $this->tag_auto_create[ $slug ] )
+				&& true === $this->tag_auto_create[ $slug ]
+				&& null !== $this->board_service
+			) {
+				$new_id                       = $this->board_service->create_public_board( $this->humanize_slug( $slug ) );
+				$this->tag_board_map[ $slug ] = $new_id;
+				if ( null !== $this->on_auto_create ) {
+					( $this->on_auto_create )( $slug, $new_id );
+				}
+				return $new_id;
+			}
+		}
+
+		return $this->default_board_id;
+	}
+
+	/**
+	 * Convert a slug into a human-readable board name.
+	 *
+	 * @param string $slug Tag slug (e.g. "anraku-ansaku").
+	 * @return string Human-readable name (e.g. "Anraku Ansaku").
+	 */
+	public function humanize_slug( string $slug ): string {
+		return ucwords( str_replace( '-', ' ', $slug ) );
 	}
 
 	/**

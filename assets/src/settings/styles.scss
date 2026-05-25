@@ -52,4 +52,74 @@
 			}
 		}
 	}
+
+	.apex-cast-tag-routing {
+		margin: 16px 0 0;
+		padding: 12px;
+		border: 1px solid #dcdcde;
+		border-radius: 4px;
+		background: #fafafa;
+
+		h4 {
+			margin: 0 0 4px;
+		}
+
+		h5 {
+			margin: 12px 0 4px;
+		}
+
+		.apex-cast-tag-routing-table {
+			margin: 12px 0;
+
+			td,
+			th {
+				vertical-align: middle;
+			}
+		}
+
+		.apex-cast-tag-routing-add-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			flex-wrap: wrap;
+		}
+
+		.apex-cast-tag-routing-suggestions {
+			margin: 4px 0 0;
+			padding: 0;
+			list-style: none;
+			max-height: 180px;
+			overflow-y: auto;
+			border: 1px solid #dcdcde;
+			background: #fff;
+
+			li {
+				margin: 0;
+				border-bottom: 1px solid #f0f0f1;
+
+				&:last-child {
+					border-bottom: 0;
+				}
+			}
+
+			button {
+				display: block;
+				width: 100%;
+				padding: 6px 10px;
+				text-align: left;
+				text-decoration: none;
+			}
+		}
+
+		.apex-cast-tag-routing-suggestion-meta {
+			margin-left: 6px;
+			color: #50575e;
+			font-size: 12px;
+		}
+
+		.apex-cast-tag-routing-error {
+			margin: 8px 0 0;
+			color: #d63638;
+		}
+	}
 }

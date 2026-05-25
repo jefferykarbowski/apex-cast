@@ -9,9 +9,11 @@ declare( strict_types=1 );
 
 namespace ApexChute\ApexCast\Tests;
 
+use ApexChute\ApexCast\Publishers\PinterestBoardService;
 use ApexChute\ApexCast\Publishers\PinterestPublisher;
 use ApexChute\ApexCast\Publishers\PublishRequest;
 use ApexChute\ApexCast\Publishers\PublisherException;
+use Closure;
 use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
@@ -25,7 +27,8 @@ use PHPUnit\Framework\TestCase;
  * Every test injects a Guzzle MockHandler — no real network. Verifies the
  * publisher's contract for is_configured, test_connection, and publish across
  * happy path, error mapping (401/429/5xx), description-building (hashtags +
- * truncation), and missing-config branches.
+ * truncation), missing-config branches, and the Phase 9 tag-routing rules:
+ * explicit override → tag map → auto-create → default board.
  */
 final class Pinterest_Publisher_Test extends TestCase {
 
@@ -35,39 +38,66 @@ final class Pinterest_Publisher_Test extends TestCase {
 	private array $history = array();
 
 	/**
-	 * Build a Pinterest publisher with the given access token/board id and a
-	 * Guzzle client backed by the supplied mocked responses. Records every
-	 * request to $this->history.
+	 * Build a Pinterest publisher with the given default board id and a Guzzle
+	 * client backed by the supplied mocked responses. Records every request to
+	 * `$this->history`.
 	 *
-	 * @param Response[] $responses    Mocked responses, in call order.
-	 * @param string     $access_token Optional access token override.
-	 * @param string     $board_id     Optional board id override.
+	 * @param Response[]             $responses        Mocked responses, in call order.
+	 * @param string                 $access_token     Optional access token override.
+	 * @param string                 $default_board_id Optional default board id override.
+	 * @param array<string, string>  $tag_board_map    Optional tag → board mapping.
+	 * @param array<string, bool>    $tag_auto_create  Optional tag → auto-create flag.
+	 * @param PinterestBoardService|null $board_service Optional board service.
+	 * @param Closure|null           $on_auto_create   Optional auto-create callback.
 	 * @return PinterestPublisher
 	 */
-	private function publisher_with_responses( array $responses, string $access_token = 'pp_test_token', string $board_id = 'board_42' ): PinterestPublisher {
-		$mock = new MockHandler( $responses );
-		$stack = HandlerStack::create( $mock );
+	private function publisher_with_responses(
+		array $responses,
+		string $access_token = 'pp_test_token',
+		string $default_board_id = 'board_42',
+		array $tag_board_map = array(),
+		array $tag_auto_create = array(),
+		?PinterestBoardService $board_service = null,
+		?Closure $on_auto_create = null
+	): PinterestPublisher {
+		$mock          = new MockHandler( $responses );
+		$stack         = HandlerStack::create( $mock );
 		$this->history = array();
 		$stack->push( Middleware::history( $this->history ) );
 		$client = new Client( array( 'handler' => $stack ) );
-		return new PinterestPublisher( $access_token, $board_id, $client );
+		return new PinterestPublisher(
+			$default_board_id,
+			$tag_board_map,
+			$tag_auto_create,
+			$board_service,
+			$on_auto_create,
+			$access_token,
+			$client
+		);
 	}
 
 	/**
 	 * Build a sample PublishRequest for use in publish() tests.
 	 *
-	 * @param string   $content  Optional content override.
-	 * @param string[] $hashtags Optional hashtag list override.
+	 * @param string               $content         Optional content override.
+	 * @param string[]             $hashtags        Optional hashtag list override.
+	 * @param array<string, mixed> $platform_options Optional platform_options override.
 	 * @return PublishRequest
 	 */
-	private function sample_request( string $content = 'Apex Chute 3.0 — built for go-pro skydivers.', array $hashtags = array( '#skydive', '#apexchute' ) ): PublishRequest {
+	private function sample_request(
+		string $content = 'Apex Chute 3.0 — built for go-pro skydivers.',
+		array $hashtags = array( '#skydive', '#apexchute' ),
+		array $platform_options = array()
+	): PublishRequest {
 		return new PublishRequest(
 			42,
 			'pinterest',
 			$content,
 			$hashtags,
 			'https://apexchute.com/product/apex-chute-3-0',
-			'https://apexchute.com/wp-content/uploads/apex.jpg'
+			'https://apexchute.com/wp-content/uploads/apex.jpg',
+			null,
+			$platform_options
 		);
 	}
 
@@ -76,10 +106,17 @@ final class Pinterest_Publisher_Test extends TestCase {
 		$this->assertSame( 'pinterest', $publisher->get_platform_id() );
 	}
 
-	public function test_is_configured_requires_both_token_and_board(): void {
+	public function test_is_configured_requires_token_and_some_destination(): void {
+		// No token at all.
 		$this->assertFalse( $this->publisher_with_responses( array(), '', 'board_1' )->is_configured() );
+		// Token but no default board AND no tag map.
 		$this->assertFalse( $this->publisher_with_responses( array(), 'tok', '' )->is_configured() );
+		// Token + default board.
 		$this->assertTrue( $this->publisher_with_responses( array(), 'tok', 'board_1' )->is_configured() );
+		// Token + tag map (no default).
+		$this->assertTrue(
+			$this->publisher_with_responses( array(), 'tok', '', array( 'gargamel' => 'b1' ) )->is_configured()
+		);
 	}
 
 	public function test_test_connection_returns_failure_when_no_token(): void {
@@ -221,5 +258,200 @@ final class Pinterest_Publisher_Test extends TestCase {
 
 		$this->assertFalse( $result->success );
 		$this->assertStringContainsString( 'JSON', (string) $result->error_message );
+	}
+
+	/* ----------------------------------------------------------------- *
+	 * Phase 9: tag routing + override resolution.
+	 * ----------------------------------------------------------------- */
+
+	public function test_publish_uses_tag_mapping_when_slug_matches(): void {
+		$body = (string) json_encode( array( 'id' => 'pin_X' ) );
+		$publisher = $this->publisher_with_responses(
+			array( new Response( 201, array(), $body ) ),
+			'tok',
+			'default_board',
+			array( 'gargamel' => 'board_gargamel' )
+		);
+
+		$publisher->publish(
+			$this->sample_request( 'X', array(), array( 'tag_slugs' => array( 'gargamel' ) ) )
+		);
+
+		$payload = json_decode( (string) $this->history[0]['request']->getBody(), true );
+		$this->assertSame( 'board_gargamel', $payload['board_id'] );
+	}
+
+	public function test_first_matching_tag_wins_when_multiple_tags_mapped(): void {
+		$body = (string) json_encode( array( 'id' => 'pin_X' ) );
+		$publisher = $this->publisher_with_responses(
+			array( new Response( 201, array(), $body ) ),
+			'tok',
+			'default_board',
+			array(
+				'gargamel'  => 'board_gargamel',
+				'shirahama' => 'board_shirahama',
+			)
+		);
+
+		// gargamel appears first in tag_slugs — it wins.
+		$publisher->publish(
+			$this->sample_request( 'X', array(), array( 'tag_slugs' => array( 'gargamel', 'shirahama' ) ) )
+		);
+
+		$payload = json_decode( (string) $this->history[0]['request']->getBody(), true );
+		$this->assertSame( 'board_gargamel', $payload['board_id'] );
+	}
+
+	public function test_no_matching_tags_falls_back_to_default_board(): void {
+		$body = (string) json_encode( array( 'id' => 'pin_X' ) );
+		$publisher = $this->publisher_with_responses(
+			array( new Response( 201, array(), $body ) ),
+			'tok',
+			'default_board',
+			array( 'gargamel' => 'board_gargamel' )
+		);
+
+		$publisher->publish(
+			$this->sample_request( 'X', array(), array( 'tag_slugs' => array( 'unrelated-tag' ) ) )
+		);
+
+		$payload = json_decode( (string) $this->history[0]['request']->getBody(), true );
+		$this->assertSame( 'default_board', $payload['board_id'] );
+	}
+
+	public function test_no_matching_tags_and_no_default_returns_failure(): void {
+		// is_configured() requires *some* destination, so we set a mapping
+		// but route tag_slugs that don't match it; default is empty.
+		$publisher = $this->publisher_with_responses(
+			array(),
+			'tok',
+			'',
+			array( 'gargamel' => 'board_gargamel' )
+		);
+
+		$result = $publisher->publish(
+			$this->sample_request( 'X', array(), array( 'tag_slugs' => array( 'unmapped' ) ) )
+		);
+
+		$this->assertFalse( $result->success );
+		$this->assertStringContainsString( 'No destination board', (string) $result->error_message );
+		$this->assertCount( 0, $this->history, 'Should not have hit Pinterest when no board resolves.' );
+	}
+
+	public function test_override_wins_over_tag_mapping(): void {
+		$body = (string) json_encode( array( 'id' => 'pin_X' ) );
+		$publisher = $this->publisher_with_responses(
+			array( new Response( 201, array(), $body ) ),
+			'tok',
+			'default_board',
+			array( 'gargamel' => 'board_gargamel' )
+		);
+
+		$publisher->publish(
+			$this->sample_request(
+				'X',
+				array(),
+				array(
+					'board_id_override' => 'board_OVERRIDE',
+					'tag_slugs'         => array( 'gargamel' ),
+				)
+			)
+		);
+
+		$payload = json_decode( (string) $this->history[0]['request']->getBody(), true );
+		$this->assertSame( 'board_OVERRIDE', $payload['board_id'] );
+	}
+
+	public function test_override_wins_over_default_board(): void {
+		$body = (string) json_encode( array( 'id' => 'pin_X' ) );
+		$publisher = $this->publisher_with_responses(
+			array( new Response( 201, array(), $body ) ),
+			'tok',
+			'default_board'
+		);
+
+		$publisher->publish(
+			$this->sample_request(
+				'X',
+				array(),
+				array( 'board_id_override' => 'board_OVERRIDE' )
+			)
+		);
+
+		$payload = json_decode( (string) $this->history[0]['request']->getBody(), true );
+		$this->assertSame( 'board_OVERRIDE', $payload['board_id'] );
+	}
+
+	public function test_empty_override_falls_through_to_tag_mapping(): void {
+		$body = (string) json_encode( array( 'id' => 'pin_X' ) );
+		$publisher = $this->publisher_with_responses(
+			array( new Response( 201, array(), $body ) ),
+			'tok',
+			'default_board',
+			array( 'gargamel' => 'board_gargamel' )
+		);
+
+		$publisher->publish(
+			$this->sample_request(
+				'X',
+				array(),
+				array(
+					'board_id_override' => '',
+					'tag_slugs'         => array( 'gargamel' ),
+				)
+			)
+		);
+
+		$payload = json_decode( (string) $this->history[0]['request']->getBody(), true );
+		$this->assertSame( 'board_gargamel', $payload['board_id'] );
+	}
+
+	public function test_auto_create_creates_board_and_fires_callback(): void {
+		// Two mocked responses: 1) board create, 2) pin create.
+		$board_create_body = (string) json_encode( array( 'id' => 'new_board_id' ) );
+		$pin_body          = (string) json_encode( array( 'id' => 'pin_X' ) );
+
+		$mock          = new MockHandler( array( new Response( 201, array(), $board_create_body ), new Response( 201, array(), $pin_body ) ) );
+		$stack         = HandlerStack::create( $mock );
+		$this->history = array();
+		$stack->push( Middleware::history( $this->history ) );
+		$client = new Client( array( 'handler' => $stack ) );
+
+		$service = new PinterestBoardService( 'tok', $client );
+
+		$captured = array();
+		$on_auto  = function ( string $slug, string $new_id ) use ( &$captured ): void {
+			$captured[] = array( $slug, $new_id );
+		};
+
+		$publisher = new PinterestPublisher(
+			'default_board',
+			array(),
+			array( 'gargamel' => true ),
+			$service,
+			$on_auto,
+			'tok',
+			$client
+		);
+
+		$publisher->publish(
+			$this->sample_request( 'X', array(), array( 'tag_slugs' => array( 'gargamel' ) ) )
+		);
+
+		$this->assertCount( 2, $this->history );
+		$create_payload = json_decode( (string) $this->history[0]['request']->getBody(), true );
+		$this->assertSame( 'Gargamel', $create_payload['name'] );
+		$this->assertSame( 'PUBLIC', $create_payload['privacy'] );
+
+		$pin_payload = json_decode( (string) $this->history[1]['request']->getBody(), true );
+		$this->assertSame( 'new_board_id', $pin_payload['board_id'] );
+
+		$this->assertSame( array( array( 'gargamel', 'new_board_id' ) ), $captured );
+	}
+
+	public function test_humanize_slug_capitalizes_words(): void {
+		$publisher = $this->publisher_with_responses( array(), 'tok', 'board_42' );
+		$this->assertSame( 'Anraku Ansaku', $publisher->humanize_slug( 'anraku-ansaku' ) );
+		$this->assertSame( 'Gargamel', $publisher->humanize_slug( 'gargamel' ) );
 	}
 }

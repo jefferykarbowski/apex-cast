@@ -13,10 +13,12 @@ use ApexChute\ApexCast\OAuth\MetaOAuth;
 use ApexChute\ApexCast\OAuth\OAuthStateStore;
 use ApexChute\ApexCast\OAuth\PinterestOAuth;
 use ApexChute\ApexCast\Plugin;
+use ApexChute\ApexCast\Publishers\PinterestBoardService;
 use ApexChute\ApexCast\Publishers\PublishRequest;
 use ApexChute\ApexCast\Publishers\PublisherException;
 use WP_REST_Request;
 use WP_REST_Response;
+use WP_Term;
 
 /**
  * Registers every Apex Cast REST endpoint listed in SPEC §7 and wires it to
@@ -115,6 +117,26 @@ final class RestController {
 
 		register_rest_route(
 			self::REST_NAMESPACE,
+			'/pinterest/boards',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( $this, 'list_pinterest_boards' ),
+				'permission_callback' => $auth,
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/woocommerce/tags',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( $this, 'list_woocommerce_tags' ),
+				'permission_callback' => $auth,
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
 			'/oauth/(?P<platform>[a-z0-9_-]+)/start',
 			array(
 				'methods'             => 'POST',
@@ -191,6 +213,11 @@ final class RestController {
 		$registry     = $plugin->publisher_registry();
 		$repo         = $plugin->job_repository();
 
+		// Per-platform options coming off the request body. Right now only
+		// Pinterest reads anything (the metabox "Pin to" override); other
+		// platforms get an empty bag.
+		$incoming_platform_options = $this->extract_platform_options( $request );
+
 		$snapshot = array(
 			'content'  => $content,
 			'hashtags' => $hashtags,
@@ -231,6 +258,14 @@ final class RestController {
 				continue;
 			}
 
+			$platform_options = isset( $incoming_platform_options[ $platform ] ) && is_array( $incoming_platform_options[ $platform ] )
+				? $incoming_platform_options[ $platform ]
+				: array();
+			// Server-provided routing context: tag slugs are derived from the
+			// canonical WC product, never the browser, so Pinterest's
+			// tag→board routing can't be tampered with from the client.
+			$platform_options['tag_slugs'] = $context->tag_slugs;
+
 			$publish_request = new PublishRequest(
 				$product_id,
 				$platform,
@@ -238,7 +273,8 @@ final class RestController {
 				$hashtags,
 				$context->permalink,
 				$context->featured_image,
-				$scheduled_at
+				$scheduled_at,
+				$platform_options
 			);
 
 			try {
@@ -467,6 +503,31 @@ final class RestController {
 
 		$settings_url = admin_url( 'options-general.php?page=apex-cast-settings' );
 
+		// Diagnostic: capture what actually arrived from the provider redirect so
+		// `missing_params` / `provider_error` etc. can be traced after the fact.
+		// The values are truncated and never include the raw token exchange code
+		// past its first 8 chars.
+		$diag_query  = $request->get_query_params();
+		$param_names = is_array( $diag_query ) ? array_keys( $diag_query ) : array();
+		$raw_qs      = isset( $_SERVER['QUERY_STRING'] ) ? sanitize_text_field( wp_unslash( (string) $_SERVER['QUERY_STRING'] ) ) : '';
+		$diag_uri    = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( (string) $_SERVER['REQUEST_URI'] ) ) : '';
+		Plugin::instance()->logger()->info(
+			'rest.oauth_callback',
+			'Callback received.',
+			array(
+				'platform'     => $platform,
+				'param_names'  => $param_names,
+				'has_code'     => '' !== $code,
+				'code_prefix'  => '' !== $code ? substr( $code, 0, 8 ) : '',
+				'has_state'    => '' !== $state,
+				'state_prefix' => '' !== $state ? substr( $state, 0, 8 ) : '',
+				'has_error'    => '' !== $provider_err,
+				'error_value'  => $provider_err,
+				'qs_length'    => strlen( $raw_qs ),
+				'uri_prefix'   => substr( $diag_uri, 0, 120 ),
+			)
+		);
+
 		if ( 'pinterest' !== $platform && 'facebook' !== $platform ) {
 			$this->finish_oauth_callback( $settings_url, $platform, 'unsupported_platform' );
 		}
@@ -492,7 +553,28 @@ final class RestController {
 		if ( null === $state_data ) {
 			$this->finish_oauth_callback( $settings_url, $platform, 'invalid_state' );
 		}
-		if ( get_current_user_id() !== $state_data['user_id'] ) {
+
+		// Recover the logged-in user from the auth cookie directly. WP REST's
+		// cookie-auth check is skipped for cross-site browser redirects (no
+		// X-WP-Nonce header), so get_current_user_id() returns 0 here even
+		// when the browser is carrying a valid wordpress_logged_in_* cookie.
+		// wp_validate_auth_cookie() parses that cookie out of $_COOKIE and
+		// returns the user id (or false) without needing the nonce.
+		$callback_user_id = (int) wp_validate_auth_cookie( '', 'logged_in' );
+		if ( $callback_user_id <= 0 ) {
+			$callback_user_id = get_current_user_id();
+		}
+		if ( $callback_user_id !== (int) $state_data['user_id'] ) {
+			Plugin::instance()->logger()->warn(
+				'rest.oauth_callback',
+				'User mismatch on callback.',
+				array(
+					'platform'        => $platform,
+					'state_user_id'   => (int) $state_data['user_id'],
+					'cookie_user_id'  => $callback_user_id,
+					'current_user_id' => get_current_user_id(),
+				)
+			);
 			$this->finish_oauth_callback( $settings_url, $platform, 'user_mismatch' );
 		}
 
@@ -861,6 +943,135 @@ final class RestController {
 			}
 		}
 
+		return $out;
+	}
+
+	/**
+	 * GET /pinterest/boards — list every board the connected account owns.
+	 *
+	 * Used by the Settings UI (tag-routing dropdown) and the metabox "Pin to"
+	 * override picker. Both call through this single endpoint so the cache (if
+	 * any) is shared.
+	 *
+	 * @return WP_REST_Response
+	 */
+	public function list_pinterest_boards(): WP_REST_Response {
+		$access_token = Plugin::instance()->settings()->get_secret( 'platforms.pinterest.access_token_encrypted' );
+		if ( '' === $access_token ) {
+			return $this->error( 'not_connected', 'Pinterest is not connected.', 400 );
+		}
+
+		try {
+			$service = new PinterestBoardService( $access_token );
+			$boards  = $service->list_boards();
+		} catch ( PublisherException $e ) {
+			return $this->error( $e->getMessage(), $e->getMessage(), 502 );
+		}
+
+		return $this->ok( array( 'boards' => $boards ) );
+	}
+
+	/**
+	 * GET /woocommerce/tags — search-as-you-type autocomplete for `product_tag`.
+	 *
+	 * Returns `[{slug, name, count}]` of matching terms ordered by usage count
+	 * descending so the most-used tags surface first. Accepts:
+	 *   - `search`: substring (case-insensitive) to filter `name` on.
+	 *   - `limit`:  cap on rows returned, 1–100, default 20.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @return WP_REST_Response
+	 */
+	public function list_woocommerce_tags( WP_REST_Request $request ): WP_REST_Response {
+		$search = isset( $request['search'] ) ? sanitize_text_field( (string) $request['search'] ) : '';
+		$limit  = isset( $request['limit'] ) ? (int) $request['limit'] : 20;
+		if ( $limit < 1 ) {
+			$limit = 20;
+		}
+		if ( $limit > 100 ) {
+			$limit = 100;
+		}
+
+		$args = array(
+			'taxonomy'   => 'product_tag',
+			'hide_empty' => false,
+			'number'     => $limit,
+			'orderby'    => 'count',
+			'order'      => 'DESC',
+		);
+		if ( '' !== $search ) {
+			$args['search'] = $search;
+		}
+
+		$terms = get_terms( $args );
+		$out   = array();
+		if ( is_array( $terms ) ) {
+			foreach ( $terms as $term ) {
+				if ( ! ( $term instanceof WP_Term ) ) {
+					continue;
+				}
+				$out[] = array(
+					'slug'  => (string) $term->slug,
+					'name'  => (string) $term->name,
+					'count' => (int) $term->count,
+				);
+			}
+		}
+
+		return $this->ok( array( 'tags' => $out ) );
+	}
+
+	/**
+	 * Pull per-platform options off the incoming `/send` request body, scrubbing
+	 * each platform's payload before it leaves this layer.
+	 *
+	 * Today the only honored option is `pinterest.board_id_override`, but the
+	 * shape is open so future platforms can carry their own knobs through
+	 * without widening every call site.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @return array<string, array<string, mixed>>
+	 */
+	private function extract_platform_options( WP_REST_Request $request ): array {
+		$raw = $request['platform_options'] ?? null;
+		if ( ! is_array( $raw ) ) {
+			return array();
+		}
+
+		$out = array();
+		foreach ( $raw as $platform => $opts ) {
+			if ( ! is_string( $platform ) || '' === $platform || ! is_array( $opts ) ) {
+				continue;
+			}
+			$platform = sanitize_key( $platform );
+			if ( 'pinterest' === $platform ) {
+				$out[ $platform ] = $this->sanitize_pinterest_options( $opts );
+				continue;
+			}
+			// Unknown platforms: pass through nothing for now — opt-in expansion.
+		}
+		return $out;
+	}
+
+	/**
+	 * Sanitize the per-publish Pinterest options. Right now: only
+	 * `board_id_override`, alphanumeric + underscore + dash, ≤ 32 chars.
+	 * Anything else is dropped silently.
+	 *
+	 * @param array<string, mixed> $opts Raw options block from the client.
+	 * @return array<string, mixed>
+	 */
+	private function sanitize_pinterest_options( array $opts ): array {
+		$out = array();
+		if ( isset( $opts['board_id_override'] ) && is_string( $opts['board_id_override'] ) ) {
+			$candidate = $opts['board_id_override'];
+			if ( '' !== $candidate
+				&& strlen( $candidate ) <= 32
+				&& 1 === preg_match( '/^[A-Za-z0-9_-]+$/', $candidate )
+			) {
+				$out['board_id_override'] = $candidate;
+			}
+		}
 		return $out;
 	}
 

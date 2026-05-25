@@ -32,6 +32,7 @@ final class Value_Objects_Test extends TestCase {
 			'$199.00',
 			array( 'Sporting Goods' ),
 			array( 'skydiving', 'apex' ),
+			array( 'skydiving', 'apex' ),
 			'instock',
 			'https://apexchute.com/wp-content/uploads/apex.jpg'
 		);
@@ -42,6 +43,7 @@ final class Value_Objects_Test extends TestCase {
 		$this->assertSame( 'Apex Chute 3.0', $array['title'] );
 		$this->assertSame( 'instock', $array['stock_status'] );
 		$this->assertSame( array( 'skydiving', 'apex' ), $array['tags'] );
+		$this->assertSame( array( 'skydiving', 'apex' ), $array['tag_slugs'] );
 	}
 
 	public function test_test_connection_result_success_factory(): void {

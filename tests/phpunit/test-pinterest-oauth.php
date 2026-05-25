@@ -66,7 +66,7 @@ final class Pinterest_OAuth_Test extends TestCase {
 		$this->assertSame( 'https://example.com/callback', $parts['redirect_uri'] );
 		$this->assertSame( 'code', $parts['response_type'] );
 		$this->assertSame( 'STATE123', $parts['state'] );
-		$this->assertSame( 'boards:read,pins:write,user_accounts:read', $parts['scope'] );
+		$this->assertSame( 'boards:read,boards:write,pins:read,pins:write,user_accounts:read', $parts['scope'] );
 	}
 
 	public function test_exchange_code_returns_tokens_on_success(): void {

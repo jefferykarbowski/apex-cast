@@ -28,6 +28,7 @@ final class ProductContext {
 	 * @param string   $price               Formatted price string.
 	 * @param string[] $categories          Product category names.
 	 * @param string[] $tags                Product tag names.
+	 * @param string[] $tag_slugs           Product tag slugs (in WP-returned order, deduplicated).
 	 * @param string   $stock_status        WooCommerce stock status slug.
 	 * @param string   $featured_image      Featured image URL (may be empty).
 	 */
@@ -40,6 +41,7 @@ final class ProductContext {
 		public readonly string $price,
 		public readonly array $categories,
 		public readonly array $tags,
+		public readonly array $tag_slugs,
 		public readonly string $stock_status,
 		public readonly string $featured_image
 	) {}
@@ -59,6 +61,7 @@ final class ProductContext {
 			'price'               => $this->price,
 			'categories'          => $this->categories,
 			'tags'                => $this->tags,
+			'tag_slugs'           => $this->tag_slugs,
 			'stock_status'        => $this->stock_status,
 			'featured_image'      => $this->featured_image,
 		);

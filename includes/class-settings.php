@@ -128,7 +128,7 @@ final class Settings {
 	 */
 	public static function defaults(): array {
 		return array(
-			'version'   => 3,
+			'version'   => 4,
 			'store'     => array(
 				'name'              => '',
 				'description'       => '',
@@ -155,7 +155,14 @@ final class Settings {
 					'access_token_encrypted'  => '',
 					'refresh_token_encrypted' => '',
 					'expires_at'              => 0,
+					// Fallback board ID used when no per-tag mapping resolves.
 					'board_id'                => '',
+					// WC product_tag slug → Pinterest board id.
+					'tag_board_map'           => array(),
+					// WC product_tag slug → bool. When true and no mapping
+					// exists, the publisher will auto-create a public board for
+					// that tag on first send.
+					'tag_auto_create'         => array(),
 				),
 			),
 		);

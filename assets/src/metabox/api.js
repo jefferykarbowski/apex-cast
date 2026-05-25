@@ -58,13 +58,29 @@ async function request(method, path, body) {
 /**
  * Broadcast a product to the selected platforms.
  *
- * @param {number}   productId WooCommerce product ID.
- * @param {string[]} platforms Platform identifiers to send to.
+ * @param {number}   productId         WooCommerce product ID.
+ * @param {string[]} platforms         Platform identifiers to send to.
+ * @param {Object}   [platformOptions] Optional per-platform options (e.g. Pinterest board override).
  * @return {Promise<Object>} The send result envelope's data payload.
  */
-export function sendProduct(productId, platforms) {
-	return request('POST', '/send', {
+export function sendProduct(productId, platforms, platformOptions) {
+	const body = {
 		product_id: productId,
 		platforms,
-	});
+	};
+	if (platformOptions && typeof platformOptions === 'object') {
+		body.platform_options = platformOptions;
+	}
+	return request('POST', '/send', body);
+}
+
+/**
+ * List every Pinterest board the connected account owns. Used by the metabox
+ * "Pin to" override picker.
+ *
+ * @return {Promise<{boards: Array<{id: string, name: string, privacy: string}>}>}
+ *   Resolves to the data payload from the envelope.
+ */
+export function listPinterestBoards() {
+	return request('GET', '/pinterest/boards');
 }

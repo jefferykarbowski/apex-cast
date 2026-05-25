@@ -2,10 +2,21 @@
  * Settings page React app — one screen, tabbed sections, REST-backed save.
  */
 
-import { useEffect, useState, useCallback } from '@wordpress/element';
+import { useEffect, useState, useCallback, useMemo } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
 
-import { getSettings, saveSettings, testConnection, startOAuth } from './api';
+import {
+	getSettings,
+	saveSettings,
+	testConnection,
+	startOAuth,
+	listPinterestBoards,
+	searchWooCommerceTags,
+} from './api';
+
+// Sentinel select value meaning "auto-create a board on first send" rather
+// than mapping to an existing board id.
+const AUTO_CREATE_VALUE = '__auto_create__';
 
 const TABS = [
 	{ key: 'general', label: 'General' },
@@ -70,10 +81,345 @@ function renderPlatformPlaceholder() {
 }
 
 /**
+ * Render the Pinterest tag → board routing section.
+ *
+ * Two stacked areas:
+ *   - Existing mappings table: every entry in `tag_board_map` (or
+ *     `tag_auto_create`) gets a row showing the slug, a board picker, and a
+ *     Remove button. Editing the picker writes back into the maps in place.
+ *   - Add-mapping form: a tag-slug autocomplete + a board picker + Add button.
+ *     On Add, the new entry is appended to `tag_board_map` (or
+ *     `tag_auto_create` when the user picked "Auto-create on first send").
+ *
+ * Owns its own UI state (autocomplete query, suggestions, draft slug/board)
+ * but reads + writes only via the dot-path `update()` helper for the canonical
+ * settings tree.
+ *
+ * @param {Object}   args               Render arguments.
+ * @param {Object}   args.pinterest     Pinterest settings sub-tree.
+ * @param {Function} args.update        Dot-path settings updater.
+ * @param {Array}    args.boards        Cached Pinterest boards list ([] while loading).
+ * @param {boolean}  args.boardsLoading Boards request in-flight.
+ * @param {?string}  args.boardsError   Boards request error (null when fine).
+ * @return {Element} React element.
+ */
+function renderPinterestTagRouting({
+	pinterest,
+	update,
+	boards,
+	boardsLoading,
+	boardsError,
+}) {
+	const tagBoardMap = pinterest.tag_board_map || {};
+	const tagAutoCreate = pinterest.tag_auto_create || {};
+	const slugs = Array.from(
+		new Set([...Object.keys(tagBoardMap), ...Object.keys(tagAutoCreate)])
+	).sort();
+
+	// Local state lives on the parent via a closure trick: this is a child
+	// render, so we keep state in component-local React hooks below in
+	// `PinterestTagRouting` instead. Punt rendering to that component.
+	return (
+		<PinterestTagRouting
+			tagBoardMap={tagBoardMap}
+			tagAutoCreate={tagAutoCreate}
+			slugs={slugs}
+			boards={boards}
+			boardsLoading={boardsLoading}
+			boardsError={boardsError}
+			update={update}
+		/>
+	);
+}
+
+/**
+ * Self-contained tag → board routing component. Lives below the default-board
+ * input on the Pinterest row when the platform is connected.
+ *
+ * @param {Object}   props               Props.
+ * @param {Object}   props.tagBoardMap   Current tag → board id mapping.
+ * @param {Object}   props.tagAutoCreate Current tag → auto-create flag mapping.
+ * @param {string[]} props.slugs         Union of slugs from both maps, sorted.
+ * @param {?Array}   props.boards        Cached Pinterest boards (null while loading).
+ * @param {boolean}  props.boardsLoading Boards request in-flight.
+ * @param {?string}  props.boardsError   Boards request error.
+ * @param {Function} props.update        Dot-path settings updater.
+ * @return {Element} React element.
+ */
+function PinterestTagRouting({
+	tagBoardMap,
+	tagAutoCreate,
+	slugs,
+	boards,
+	boardsLoading,
+	boardsError,
+	update,
+}) {
+	const [query, setQuery] = useState('');
+	const [suggestions, setSuggestions] = useState([]);
+	const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+	const [draftSlug, setDraftSlug] = useState('');
+	const [draftBoard, setDraftBoard] = useState('');
+	const [addError, setAddError] = useState('');
+
+	// Debounce the autocomplete query — wait 200ms after the last keystroke
+	// before hitting the server.
+	useEffect(() => {
+		if (query.trim().length < 2) {
+			setSuggestions([]);
+			return undefined;
+		}
+		setSuggestionsLoading(true);
+		const handle = setTimeout(() => {
+			searchWooCommerceTags(query.trim(), 10)
+				.then((data) => {
+					setSuggestions(Array.isArray(data?.tags) ? data.tags : []);
+				})
+				.catch(() => setSuggestions([]))
+				.finally(() => setSuggestionsLoading(false));
+		}, 200);
+		return () => clearTimeout(handle);
+	}, [query]);
+
+	const sortedBoards = useMemo(() => {
+		if (!Array.isArray(boards)) {
+			return [];
+		}
+		return [...boards].sort((a, b) =>
+			String(a.name || '').localeCompare(String(b.name || ''))
+		);
+	}, [boards]);
+
+	/**
+	 * Compute the canonical select value for an existing mapping row.
+	 *
+	 * @param {string} slug Tag slug.
+	 * @return {string} Select value (board id, AUTO_CREATE_VALUE, or "").
+	 */
+	const valueForSlug = (slug) => {
+		if (tagBoardMap[slug]) {
+			return String(tagBoardMap[slug]);
+		}
+		if (tagAutoCreate[slug] === true) {
+			return AUTO_CREATE_VALUE;
+		}
+		return '';
+	};
+
+	/**
+	 * Apply a select change to the canonical settings tree.
+	 *
+	 * @param {string} slug  Tag slug.
+	 * @param {string} value Select value.
+	 */
+	const writeForSlug = (slug, value) => {
+		const nextMap = { ...tagBoardMap };
+		const nextAuto = { ...tagAutoCreate };
+		if (value === AUTO_CREATE_VALUE) {
+			delete nextMap[slug];
+			nextAuto[slug] = true;
+		} else if (value === '') {
+			delete nextMap[slug];
+			delete nextAuto[slug];
+		} else {
+			nextMap[slug] = value;
+			delete nextAuto[slug];
+		}
+		update('platforms.pinterest.tag_board_map', nextMap);
+		update('platforms.pinterest.tag_auto_create', nextAuto);
+	};
+
+	/**
+	 * Remove every trace of a slug from both maps.
+	 *
+	 * @param {string} slug Tag slug.
+	 */
+	const removeSlug = (slug) => {
+		const nextMap = { ...tagBoardMap };
+		const nextAuto = { ...tagAutoCreate };
+		delete nextMap[slug];
+		delete nextAuto[slug];
+		update('platforms.pinterest.tag_board_map', nextMap);
+		update('platforms.pinterest.tag_auto_create', nextAuto);
+	};
+
+	const handleAdd = () => {
+		const slug = (draftSlug || query).trim();
+		if (!slug) {
+			setAddError(__('Pick a tag from the suggestions.', 'apex-cast'));
+			return;
+		}
+		if (
+			Object.prototype.hasOwnProperty.call(tagBoardMap, slug) ||
+			Object.prototype.hasOwnProperty.call(tagAutoCreate, slug)
+		) {
+			setAddError(__('This tag is already mapped.', 'apex-cast'));
+			return;
+		}
+		if (!draftBoard) {
+			setAddError(__('Pick a board (or auto-create).', 'apex-cast'));
+			return;
+		}
+		setAddError('');
+		writeForSlug(slug, draftBoard);
+		setQuery('');
+		setDraftSlug('');
+		setDraftBoard('');
+		setSuggestions([]);
+	};
+
+	return (
+		<div className="apex-cast-tag-routing">
+			<h4>{__('Tag → Board routing', 'apex-cast')}</h4>
+			<p className="description">
+				{__(
+					"Send pins to a specific board based on the product's tags. The first matching tag wins; products with no matching tag fall back to the default board above.",
+					'apex-cast'
+				)}
+			</p>
+
+			{boardsError && (
+				<p className="apex-cast-tag-routing-error">{boardsError}</p>
+			)}
+			{boardsLoading && (
+				<p className="description">
+					{__('Loading boards…', 'apex-cast')}
+				</p>
+			)}
+
+			{slugs.length > 0 && (
+				<table className="widefat apex-cast-tag-routing-table">
+					<thead>
+						<tr>
+							<th>{__('Tag', 'apex-cast')}</th>
+							<th>{__('Board', 'apex-cast')}</th>
+							<th />
+						</tr>
+					</thead>
+					<tbody>
+						{slugs.map((slug) => (
+							<tr key={slug}>
+								<td>
+									<code>{slug}</code>
+								</td>
+								<td>
+									<select
+										value={valueForSlug(slug)}
+										onChange={(e) =>
+											writeForSlug(slug, e.target.value)
+										}
+									>
+										<option value="">
+											{__('— use default —', 'apex-cast')}
+										</option>
+										{sortedBoards.map((board) => (
+											<option
+												key={board.id}
+												value={board.id}
+											>
+												{board.name}
+											</option>
+										))}
+										<option value={AUTO_CREATE_VALUE}>
+											{__(
+												'Auto-create on first send',
+												'apex-cast'
+											)}
+										</option>
+									</select>
+								</td>
+								<td>
+									<button
+										type="button"
+										className="button-link-delete"
+										onClick={() => removeSlug(slug)}
+									>
+										{__('Remove', 'apex-cast')}
+									</button>
+								</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			)}
+
+			<div className="apex-cast-tag-routing-add">
+				<h5>{__('Add mapping', 'apex-cast')}</h5>
+				<div className="apex-cast-tag-routing-add-row">
+					<input
+						type="text"
+						className="regular-text"
+						placeholder={__('Search product tags…', 'apex-cast')}
+						value={query}
+						onChange={(e) => {
+							setQuery(e.target.value);
+							setDraftSlug('');
+						}}
+					/>
+					<select
+						value={draftBoard}
+						onChange={(e) => setDraftBoard(e.target.value)}
+					>
+						<option value="">
+							{__('— pick a board —', 'apex-cast')}
+						</option>
+						{sortedBoards.map((board) => (
+							<option key={board.id} value={board.id}>
+								{board.name}
+							</option>
+						))}
+						<option value={AUTO_CREATE_VALUE}>
+							{__('Auto-create on first send', 'apex-cast')}
+						</option>
+					</select>
+					<button
+						type="button"
+						className="button"
+						onClick={handleAdd}
+					>
+						{__('Add', 'apex-cast')}
+					</button>
+				</div>
+				{suggestionsLoading && (
+					<p className="description">
+						{__('Searching…', 'apex-cast')}
+					</p>
+				)}
+				{!suggestionsLoading && suggestions.length > 0 && (
+					<ul className="apex-cast-tag-routing-suggestions">
+						{suggestions.map((tag) => (
+							<li key={tag.slug}>
+								<button
+									type="button"
+									className="button-link"
+									onClick={() => {
+										setDraftSlug(tag.slug);
+										setQuery(tag.slug);
+										setSuggestions([]);
+									}}
+								>
+									{tag.name}{' '}
+									<span className="apex-cast-tag-routing-suggestion-meta">
+										<code>{tag.slug}</code> · {tag.count}
+									</span>
+								</button>
+							</li>
+						))}
+					</ul>
+				)}
+				{addError && (
+					<p className="apex-cast-tag-routing-error">{addError}</p>
+				)}
+			</div>
+		</div>
+	);
+}
+
+/**
  * Render the Pinterest configuration row in the Platforms tab.
  *
  * Two states based on whether an access token is already stored:
- *   - Connected: editable board id, Test connection, Disconnect
+ *   - Connected: editable default board id, tag → board routing, Test connection, Disconnect
  *   - Disconnected: "Connect Pinterest" button (kicks off OAuth) + editable board id
  *
  * @param {Object}   args                     Render arguments.
@@ -83,6 +429,9 @@ function renderPlatformPlaceholder() {
  * @param {Function} args.disconnectPinterest Disconnect callback.
  * @param {Function} args.renderTestResult    Renders the saved test-connection result.
  * @param {Function} args.onStartConnect      Click handler for the "Connect Pinterest" button.
+ * @param {Array}    args.pinterestBoards     Cached boards list (null while not yet loaded).
+ * @param {boolean}  args.boardsLoading       Boards request in-flight.
+ * @param {?string}  args.boardsError         Boards request error.
  * @return {Element} React element.
  */
 function renderPinterestRow({
@@ -92,6 +441,9 @@ function renderPinterestRow({
 	disconnectPinterest,
 	renderTestResult,
 	onStartConnect,
+	pinterestBoards,
+	boardsLoading,
+	boardsError,
 }) {
 	const pinterest = settings.platforms?.pinterest || {};
 	const tokenSet = pinterest.access_token_set === true;
@@ -106,7 +458,10 @@ function renderPinterestRow({
 				</p>
 				<p>
 					<label htmlFor="apex-cast-pinterest-board">
-						{__('Board ID:', 'apex-cast')}{' '}
+						{__(
+							'Default board — fallback when no category matches:',
+							'apex-cast'
+						)}{' '}
 					</label>
 					<input
 						id="apex-cast-pinterest-board"
@@ -121,6 +476,13 @@ function renderPinterestRow({
 						}
 					/>
 				</p>
+				{renderPinterestTagRouting({
+					pinterest,
+					update,
+					boards: pinterestBoards,
+					boardsLoading,
+					boardsError,
+				})}
 				<p>
 					<button
 						type="button"
@@ -330,9 +692,39 @@ export default function SettingsApp({ bootstrapData }) {
 	const [error, setError] = useState(null);
 	const [testResult, setTestResult] = useState({});
 	const [newAvoid, setNewAvoid] = useState('');
+	const [pinterestBoards, setPinterestBoards] = useState(null);
+	const [pinterestBoardsLoading, setPinterestBoardsLoading] = useState(false);
+	const [pinterestBoardsError, setPinterestBoardsError] = useState(null);
 
 	// Reserved for future per-platform connect flows; consumed by the heuristic above.
 	void bootstrapData;
+
+	const pinterestTokenSet =
+		settings?.platforms?.pinterest?.access_token_set === true;
+
+	// Lazily fetch the Pinterest board list once we know we're connected. Used
+	// by the tag-routing picker.
+	useEffect(() => {
+		if (
+			!pinterestTokenSet ||
+			pinterestBoards !== null ||
+			pinterestBoardsLoading
+		) {
+			return;
+		}
+		setPinterestBoardsLoading(true);
+		setPinterestBoardsError(null);
+		listPinterestBoards()
+			.then((data) => {
+				const boards = Array.isArray(data?.boards) ? data.boards : [];
+				setPinterestBoards(boards);
+			})
+			.catch((e) => {
+				setPinterestBoardsError(e.message);
+				setPinterestBoards([]);
+			})
+			.finally(() => setPinterestBoardsLoading(false));
+	}, [pinterestTokenSet, pinterestBoards, pinterestBoardsLoading]);
 
 	useEffect(() => {
 		getSettings()
@@ -820,6 +1212,9 @@ export default function SettingsApp({ bootstrapData }) {
 										disconnectPinterest,
 										renderTestResult,
 										onStartConnect: startPinterestConnect,
+										pinterestBoards,
+										boardsLoading: pinterestBoardsLoading,
+										boardsError: pinterestBoardsError,
 									});
 								} else if (p.id === 'facebook') {
 									body = renderFacebookRow({

@@ -77,3 +77,34 @@ export function testConnection(target) {
 export function startOAuth(platform) {
 	return request('POST', `/oauth/${platform}/start`);
 }
+
+/**
+ * List every Pinterest board the connected account owns.
+ *
+ * @return {Promise<{boards: Array<{id: string, name: string, privacy: string}>}>}
+ *   Resolves to the data payload from the envelope.
+ */
+export function listPinterestBoards() {
+	return request('GET', '/pinterest/boards');
+}
+
+/**
+ * Search WooCommerce product tags for the autocomplete in the Pinterest
+ * tag-routing section.
+ *
+ * @param {string} search     Substring to filter by (matched on `name`).
+ * @param {number} [limit=20] Optional cap (1-100).
+ * @return {Promise<{tags: Array<{slug: string, name: string, count: number}>}>}
+ *   Resolves to the data payload from the envelope.
+ */
+export function searchWooCommerceTags(search, limit) {
+	const params = new URLSearchParams();
+	if (search) {
+		params.set('search', search);
+	}
+	if (limit) {
+		params.set('limit', String(limit));
+	}
+	const qs = params.toString();
+	return request('GET', `/woocommerce/tags${qs ? '?' + qs : ''}`);
+}

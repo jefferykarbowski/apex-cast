@@ -10,6 +10,8 @@ declare( strict_types=1 );
 namespace ApexChute\ApexCast\Admin;
 
 use ApexChute\ApexCast\Plugin;
+use ApexChute\ApexCast\Publishers\PinterestBoardService;
+use ApexChute\ApexCast\Publishers\PublisherException;
 use WP_Post;
 
 /**
@@ -137,33 +139,101 @@ final class Admin {
 		$short_description = '';
 		$featured_image    = '';
 		$tags              = array();
+		$tag_slugs         = array();
 		if ( $product_id > 0 ) {
 			$context = $plugin->product_context_builder()->build( $product_id );
 			if ( null !== $context ) {
 				$short_description = '' !== trim( $context->short_description ) ? $context->short_description : $context->title;
 				$featured_image    = $context->featured_image;
 				$tags              = $context->tags;
+				$tag_slugs         = $context->tag_slugs;
 			}
 		}
+
+		$resolved_board_name = $this->resolve_pinterest_board_name( $tag_slugs );
 
 		$this->enqueue_entry( 'metabox', $base_path, $base_url );
 		wp_localize_script(
 			'apex-cast-metabox',
 			'APEX_CAST_DATA',
 			array(
-				'restUrl'             => esc_url_raw( rest_url( 'apex-cast/v1' ) ),
-				'nonce'               => wp_create_nonce( 'wp_rest' ),
-				'productId'           => $product_id,
-				'shortDescription'    => $short_description,
-				'featuredImage'       => $featured_image,
-				'tags'                => $tags,
-				'lastSentAt'          => $last_sent_at,
-				'lastJobId'           => $last_job_id,
-				'defaultPlatforms'    => $defaults,
-				'configuredPlatforms' => $configured_platforms,
-				'supportedPlatforms'  => $supported_platforms,
+				'restUrl'                    => esc_url_raw( rest_url( 'apex-cast/v1' ) ),
+				'nonce'                      => wp_create_nonce( 'wp_rest' ),
+				'productId'                  => $product_id,
+				'shortDescription'           => $short_description,
+				'featuredImage'              => $featured_image,
+				'tags'                       => $tags,
+				'tagSlugs'                   => $tag_slugs,
+				'lastSentAt'                 => $last_sent_at,
+				'lastJobId'                  => $last_job_id,
+				'defaultPlatforms'           => $defaults,
+				'configuredPlatforms'        => $configured_platforms,
+				'supportedPlatforms'         => $supported_platforms,
+				'pinterestResolvedBoardName' => $resolved_board_name,
 			)
 		);
+	}
+
+	/**
+	 * Replicate the publisher's tag→board resolution server-side to compute the
+	 * human-readable name the metabox shows in its preview.
+	 *
+	 * Walks the given tag slugs through `platforms.pinterest.tag_board_map`.
+	 * First match wins; on miss, falls back to the default board id. We then
+	 * look up the matching name in the cached Pinterest boards list (TTL 300s
+	 * via `wp_cache_*`) so a fresh metabox render doesn't beat the API.
+	 *
+	 * @param string[] $tag_slugs Tag slugs in priority order (from ProductContext).
+	 * @return string Human-readable board name, or empty string when nothing resolves.
+	 */
+	private function resolve_pinterest_board_name( array $tag_slugs ): string {
+		$settings_store = Plugin::instance()->settings();
+
+		$tag_board_map_raw = $settings_store->get( 'platforms.pinterest.tag_board_map', array() );
+		$tag_board_map     = is_array( $tag_board_map_raw ) ? $tag_board_map_raw : array();
+		$default_board_id  = (string) $settings_store->get( 'platforms.pinterest.board_id', '' );
+
+		$resolved_id = '';
+		foreach ( $tag_slugs as $slug ) {
+			$slug = (string) $slug;
+			if ( '' === $slug ) {
+				continue;
+			}
+			if ( isset( $tag_board_map[ $slug ] ) && is_string( $tag_board_map[ $slug ] ) && '' !== $tag_board_map[ $slug ] ) {
+				$resolved_id = (string) $tag_board_map[ $slug ];
+				break;
+			}
+		}
+		if ( '' === $resolved_id ) {
+			$resolved_id = $default_board_id;
+		}
+		if ( '' === $resolved_id ) {
+			return '';
+		}
+
+		$access_token = $settings_store->get_secret( 'platforms.pinterest.access_token_encrypted' );
+		if ( '' === $access_token ) {
+			return '';
+		}
+
+		$boards = wp_cache_get( 'apex_cast_pinterest_boards', 'apex-cast' );
+		if ( ! is_array( $boards ) ) {
+			try {
+				$service = new PinterestBoardService( $access_token );
+				$boards  = $service->list_boards();
+				wp_cache_set( 'apex_cast_pinterest_boards', $boards, 'apex-cast', 300 );
+			} catch ( PublisherException $e ) {
+				return '';
+			}
+		}
+
+		foreach ( $boards as $board ) {
+			if ( is_array( $board ) && isset( $board['id'], $board['name'] ) && (string) $board['id'] === $resolved_id ) {
+				return (string) $board['name'];
+			}
+		}
+
+		return '';
 	}
 
 	/**

@@ -30,11 +30,23 @@ final class PinterestOAuth {
 	private const PLATFORM_ID   = 'pinterest';
 
 	/**
-	 * OAuth scopes required to read boards, publish pins, and identify the user.
+	 * OAuth scopes Pinterest requires for the publish flow.
+	 *
+	 * `pins:write` alone is not enough: Pinterest's `POST /v5/pins` validates the
+	 * token against *all* of `boards:read`, `boards:write`, `pins:read`, and
+	 * `pins:write`, returning a 401 with a "Missing: ['boards:write','pins:read']"
+	 * body when any are absent. `user_accounts:read` is requested separately so
+	 * the test_connection probe can resolve a friendly @username.
 	 *
 	 * @var string[]
 	 */
-	public const SCOPES = array( 'boards:read', 'pins:write', 'user_accounts:read' );
+	public const SCOPES = array(
+		'boards:read',
+		'boards:write',
+		'pins:read',
+		'pins:write',
+		'user_accounts:read',
+	);
 
 	/**
 	 * HTTP client.

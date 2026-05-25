@@ -12,6 +12,7 @@ namespace ApexChute\ApexCast;
 use ApexChute\ApexCast\Admin\Admin;
 use ApexChute\ApexCast\Publishers\FacebookPagePublisher;
 use ApexChute\ApexCast\Publishers\InstagramPublisher;
+use ApexChute\ApexCast\Publishers\PinterestBoardService;
 use ApexChute\ApexCast\Publishers\PinterestPublisher;
 use ApexChute\ApexCast\Rest\RestController;
 
@@ -205,13 +206,89 @@ final class Plugin {
 	 * stored in settings. Missing credentials are passed through as empty
 	 * strings — the publisher self-reports as unconfigured in that case.
 	 *
+	 * Wires in the per-tag routing pieces: the saved tag→board map, the
+	 * per-tag auto-create flags, an HTTP board service (only when a token is
+	 * available; without one auto-create is silently disabled), and a closure
+	 * that persists any auto-created mapping back to settings.
+	 *
 	 * @param PublisherRegistry $registry The registry to populate.
 	 * @return void
 	 */
 	private function register_pinterest( PublisherRegistry $registry ): void {
-		$access_token = $this->settings()->get_secret( 'platforms.pinterest.access_token_encrypted' );
-		$board_id     = (string) $this->settings()->get( 'platforms.pinterest.board_id', '' );
-		$registry->register( new PinterestPublisher( $access_token, $board_id ) );
+		$settings_store   = $this->settings();
+		$access_token     = $settings_store->get_secret( 'platforms.pinterest.access_token_encrypted' );
+		$default_board_id = (string) $settings_store->get( 'platforms.pinterest.board_id', '' );
+
+		$raw_map         = $settings_store->get( 'platforms.pinterest.tag_board_map', array() );
+		$tag_board_map   = $this->coerce_tag_string_map( is_array( $raw_map ) ? $raw_map : array() );
+		$raw_auto        = $settings_store->get( 'platforms.pinterest.tag_auto_create', array() );
+		$tag_auto_create = $this->coerce_tag_bool_map( is_array( $raw_auto ) ? $raw_auto : array() );
+
+		$board_service = '' !== $access_token ? new PinterestBoardService( $access_token ) : null;
+
+		// Persist auto-created mappings back into settings so the user sees them
+		// in the UI and so subsequent sends skip the create round-trip. Re-read
+		// settings inside the closure to avoid clobbering anything that may
+		// have changed between publisher construction and the actual send.
+		$on_auto_create = function ( string $slug, string $new_board_id ) use ( $settings_store ): void {
+			$current = $settings_store->all();
+			if ( ! isset( $current['platforms']['pinterest'] ) || ! is_array( $current['platforms']['pinterest'] ) ) {
+				$current['platforms']['pinterest'] = array();
+			}
+			if ( ! isset( $current['platforms']['pinterest']['tag_board_map'] ) || ! is_array( $current['platforms']['pinterest']['tag_board_map'] ) ) {
+				$current['platforms']['pinterest']['tag_board_map'] = array();
+			}
+			$current['platforms']['pinterest']['tag_board_map'][ $slug ] = $new_board_id;
+			$settings_store->save( $current );
+		};
+
+		$registry->register(
+			new PinterestPublisher(
+				$default_board_id,
+				$tag_board_map,
+				$tag_auto_create,
+				$board_service,
+				$on_auto_create,
+				$access_token
+			)
+		);
+	}
+
+	/**
+	 * Coerce a raw tag→board-id map from settings into a clean string→string array.
+	 *
+	 * @param array<int|string, mixed> $raw Untrusted map straight out of options.
+	 * @return array<string, string>
+	 */
+	private function coerce_tag_string_map( array $raw ): array {
+		$out = array();
+		foreach ( $raw as $slug => $value ) {
+			if ( ! is_string( $slug ) || '' === $slug ) {
+				continue;
+			}
+			if ( ! is_string( $value ) || '' === $value ) {
+				continue;
+			}
+			$out[ $slug ] = $value;
+		}
+		return $out;
+	}
+
+	/**
+	 * Coerce a raw tag→bool map from settings into a clean string→bool array.
+	 *
+	 * @param array<int|string, mixed> $raw Untrusted map straight out of options.
+	 * @return array<string, bool>
+	 */
+	private function coerce_tag_bool_map( array $raw ): array {
+		$out = array();
+		foreach ( $raw as $slug => $value ) {
+			if ( ! is_string( $slug ) || '' === $slug ) {
+				continue;
+			}
+			$out[ $slug ] = (bool) $value;
+		}
+		return $out;
 	}
 
 	/**
