@@ -128,7 +128,7 @@ final class Settings {
 	 */
 	public static function defaults(): array {
 		return array(
-			'version'   => 4,
+			'version'   => 5,
 			'store'     => array(
 				'name'              => '',
 				'description'       => '',
@@ -155,6 +155,14 @@ final class Settings {
 					'access_token_encrypted'  => '',
 					'refresh_token_encrypted' => '',
 					'expires_at'              => 0,
+					// Which Pinterest API realm to talk to. Trial-mode apps
+					// cannot publish pins on production (HTTP 403 code 29);
+					// `sandbox` switches every Pinterest-facing call over to
+					// `api-sandbox.pinterest.com` for testing + the demo-video
+					// recording needed for Standard Access submission.
+					// Token-issuing realms are mode-specific, so changing this
+					// requires a disconnect + reconnect cycle.
+					'api_mode'                => 'production',
 					// Fallback board ID used when no per-tag mapping resolves.
 					'board_id'                => '',
 					// WC product_tag slug → Pinterest board id.

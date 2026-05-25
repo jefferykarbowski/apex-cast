@@ -416,6 +416,69 @@ function PinterestTagRouting({
 }
 
 /**
+ * Render the API mode <select> shared by the connected + disconnected states.
+ *
+ * Pinterest's trial-mode apps can't publish on production (HTTP 403 code 29),
+ * so we let the user swap the entire Pinterest-facing realm over to
+ * `api-sandbox.pinterest.com` for testing + the Standard Access demo-video
+ * recording. Production and sandbox have separate token universes, so the
+ * caller is responsible for nudging the user to disconnect + reconnect on a
+ * mode change — surfaced via the inline warning when `currentMode` differs
+ * from `savedMode`.
+ *
+ * @param {Object}   args             Render arguments.
+ * @param {string}   args.idSuffix    Suffix appended to the `<select>` id to keep duplicates safe.
+ * @param {string}   args.currentMode Draft mode currently in the settings tree.
+ * @param {string}   args.savedMode   Mode that was on the server at last load/save.
+ * @param {Function} args.update      Dot-path settings updater.
+ * @return {Element} React element.
+ */
+function renderPinterestApiModeSelect({
+	idSuffix,
+	currentMode,
+	savedMode,
+	update,
+}) {
+	const showWarning = currentMode !== savedMode;
+	return (
+		<p className="apex-cast-pinterest-api-mode">
+			<label htmlFor={`apex-cast-pinterest-api-mode-${idSuffix}`}>
+				{__('API mode:', 'apex-cast')}{' '}
+			</label>
+			<select
+				id={`apex-cast-pinterest-api-mode-${idSuffix}`}
+				value={currentMode}
+				onChange={(e) =>
+					update('platforms.pinterest.api_mode', e.target.value)
+				}
+			>
+				<option value="production">
+					{__(
+						'Production (after Pinterest Standard Access approval)',
+						'apex-cast'
+					)}
+				</option>
+				<option value="sandbox">
+					{__(
+						'Sandbox (trial-mode testing only — pins not publicly visible)',
+						'apex-cast'
+					)}
+				</option>
+			</select>
+			{showWarning && (
+				<span className="apex-cast-pinterest-api-mode-warning">
+					{' '}
+					{__(
+						'⚠ Mode change requires disconnect + reconnect to get a new token.',
+						'apex-cast'
+					)}
+				</span>
+			)}
+		</p>
+	);
+}
+
+/**
  * Render the Pinterest configuration row in the Platforms tab.
  *
  * Two states based on whether an access token is already stored:
@@ -432,6 +495,7 @@ function PinterestTagRouting({
  * @param {Array}    args.pinterestBoards     Cached boards list (null while not yet loaded).
  * @param {boolean}  args.boardsLoading       Boards request in-flight.
  * @param {?string}  args.boardsError         Boards request error.
+ * @param {string}   args.savedApiMode        Pinterest API mode as of the last GET /settings or save.
  * @return {Element} React element.
  */
 function renderPinterestRow({
@@ -444,9 +508,11 @@ function renderPinterestRow({
 	pinterestBoards,
 	boardsLoading,
 	boardsError,
+	savedApiMode,
 }) {
 	const pinterest = settings.platforms?.pinterest || {};
 	const tokenSet = pinterest.access_token_set === true;
+	const currentApiMode = pinterest.api_mode || 'production';
 
 	if (tokenSet) {
 		return (
@@ -456,6 +522,12 @@ function renderPinterestRow({
 						{__('Connected to Pinterest.', 'apex-cast')}
 					</span>
 				</p>
+				{renderPinterestApiModeSelect({
+					idSuffix: 'connected',
+					currentMode: currentApiMode,
+					savedMode: savedApiMode,
+					update,
+				})}
 				<p>
 					<label htmlFor="apex-cast-pinterest-board">
 						{__(
@@ -506,6 +578,12 @@ function renderPinterestRow({
 
 	return (
 		<>
+			{renderPinterestApiModeSelect({
+				idSuffix: 'disconnected',
+				currentMode: currentApiMode,
+				savedMode: savedApiMode,
+				update,
+			})}
 			<p>
 				<button
 					type="button"
@@ -695,6 +773,11 @@ export default function SettingsApp({ bootstrapData }) {
 	const [pinterestBoards, setPinterestBoards] = useState(null);
 	const [pinterestBoardsLoading, setPinterestBoardsLoading] = useState(false);
 	const [pinterestBoardsError, setPinterestBoardsError] = useState(null);
+	// Tracks the Pinterest API mode as of the last successful load/save so the
+	// row can compare against the draft value in `settings` and surface the
+	// "reconnect required" warning only when the user has actually changed it.
+	const [savedPinterestApiMode, setSavedPinterestApiMode] =
+		useState('production');
 
 	// Reserved for future per-platform connect flows; consumed by the heuristic above.
 	void bootstrapData;
@@ -726,11 +809,24 @@ export default function SettingsApp({ bootstrapData }) {
 			.finally(() => setPinterestBoardsLoading(false));
 	}, [pinterestTokenSet, pinterestBoards, pinterestBoardsLoading]);
 
+	/**
+	 * Apply a freshly-loaded settings tree from the server. Also snapshots the
+	 * Pinterest API mode for the dirty-vs-saved comparison.
+	 *
+	 * @param {Object} next Settings tree from the server.
+	 */
+	const applyLoadedSettings = useCallback((next) => {
+		setSettings(next);
+		setSavedPinterestApiMode(
+			next?.platforms?.pinterest?.api_mode || 'production'
+		);
+	}, []);
+
 	useEffect(() => {
 		getSettings()
-			.then(setSettings)
+			.then(applyLoadedSettings)
 			.catch((e) => setError(e.message));
-	}, []);
+	}, [applyLoadedSettings]);
 
 	// Detect ?apex_cast_oauth=... in the URL after Pinterest redirects us
 	// back from the OAuth callback. Show a success/error notice, jump to the
@@ -748,7 +844,7 @@ export default function SettingsApp({ bootstrapData }) {
 			setSavedAt(Date.now());
 			setTab('platforms');
 			getSettings()
-				.then(setSettings)
+				.then(applyLoadedSettings)
 				.catch((e) => setError(e.message));
 		} else {
 			setError(
@@ -765,7 +861,7 @@ export default function SettingsApp({ bootstrapData }) {
 			'',
 			window.location.pathname + (newSearch ? '?' + newSearch : '')
 		);
-	}, []);
+	}, [applyLoadedSettings]);
 
 	/**
 	 * Kick off the Pinterest OAuth flow: ask the server for an auth URL, then
@@ -838,13 +934,13 @@ export default function SettingsApp({ bootstrapData }) {
 
 		try {
 			const updated = await saveSettings(body);
-			setSettings(updated);
+			applyLoadedSettings(updated);
 			setSavedAt(Date.now());
 		} catch (e) {
 			setError(e.message);
 		}
 		setSaving(false);
-	}, [settings]);
+	}, [settings, applyLoadedSettings]);
 
 	/**
 	 * Clear the Pinterest credentials by saving an explicit `access_token: null`.
@@ -858,7 +954,7 @@ export default function SettingsApp({ bootstrapData }) {
 			const updated = await saveSettings({
 				platforms: { pinterest: { access_token: null } },
 			});
-			setSettings(updated);
+			applyLoadedSettings(updated);
 			setTestResult((prev) => {
 				const { pinterest, ...rest } = prev;
 				void pinterest;
@@ -869,7 +965,7 @@ export default function SettingsApp({ bootstrapData }) {
 			setError(e.message);
 		}
 		setSaving(false);
-	}, []);
+	}, [applyLoadedSettings]);
 
 	/**
 	 * Clear the Facebook + Instagram credentials by saving explicit nulls for
@@ -897,7 +993,7 @@ export default function SettingsApp({ bootstrapData }) {
 					},
 				},
 			});
-			setSettings(updated);
+			applyLoadedSettings(updated);
 			setTestResult((prev) => {
 				const { facebook, instagram, ...rest } = prev;
 				void facebook;
@@ -909,7 +1005,7 @@ export default function SettingsApp({ bootstrapData }) {
 			setError(e.message);
 		}
 		setSaving(false);
-	}, []);
+	}, [applyLoadedSettings]);
 
 	const runTest = useCallback(async (target) => {
 		setTestResult((prev) => ({
@@ -1215,6 +1311,7 @@ export default function SettingsApp({ bootstrapData }) {
 										pinterestBoards,
 										boardsLoading: pinterestBoardsLoading,
 										boardsError: pinterestBoardsError,
+										savedApiMode: savedPinterestApiMode,
 									});
 								} else if (p.id === 'facebook') {
 									body = renderFacebookRow({

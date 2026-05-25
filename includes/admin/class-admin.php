@@ -216,10 +216,12 @@ final class Admin {
 			return '';
 		}
 
+		$api_mode = (string) $settings_store->get( 'platforms.pinterest.api_mode', 'production' );
+
 		$boards = wp_cache_get( 'apex_cast_pinterest_boards', 'apex-cast' );
 		if ( ! is_array( $boards ) ) {
 			try {
-				$service = new PinterestBoardService( $access_token );
+				$service = new PinterestBoardService( $access_token, $api_mode );
 				$boards  = $service->list_boards();
 				wp_cache_set( 'apex_cast_pinterest_boards', $boards, 'apex-cast', 300 );
 			} catch ( PublisherException $e ) {

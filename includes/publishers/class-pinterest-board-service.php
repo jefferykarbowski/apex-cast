@@ -28,10 +28,11 @@ use Psr\Http\Message\ResponseInterface;
  */
 final class PinterestBoardService {
 
-	private const API_BASE    = 'https://api.pinterest.com/v5';
-	private const PLATFORM_ID = 'pinterest';
-	private const PAGE_SIZE   = 100;
-	private const MAX_PAGES   = 50;
+	private const API_BASE_PRODUCTION = 'https://api.pinterest.com/v5';
+	private const API_BASE_SANDBOX    = 'https://api-sandbox.pinterest.com/v5';
+	private const PLATFORM_ID         = 'pinterest';
+	private const PAGE_SIZE           = 100;
+	private const MAX_PAGES           = 50;
 
 	/**
 	 * HTTP client (Guzzle by default, injectable for tests).
@@ -48,13 +49,30 @@ final class PinterestBoardService {
 	private string $access_token;
 
 	/**
+	 * Resolved API base URL. Sandbox vs production are mutually-incompatible
+	 * realms with separate token universes, so the realm is fixed for the
+	 * lifetime of the service.
+	 *
+	 * @var string
+	 */
+	private string $api_base;
+
+	/**
 	 * Constructor.
 	 *
 	 * @param string               $access_token Plaintext Pinterest API access token.
+	 * @param string               $api_mode     'production' (default) or 'sandbox'.
 	 * @param ClientInterface|null $client       Optional Guzzle client override for tests.
 	 */
-	public function __construct( string $access_token, ?ClientInterface $client = null ) {
+	public function __construct(
+		string $access_token,
+		string $api_mode = 'production',
+		?ClientInterface $client = null
+	) {
 		$this->access_token = $access_token;
+		$this->api_base     = 'sandbox' === $api_mode
+			? self::API_BASE_SANDBOX
+			: self::API_BASE_PRODUCTION;
 		$this->client       = $client ?? new Client( array( 'timeout' => 30 ) );
 	}
 
@@ -154,7 +172,7 @@ final class PinterestBoardService {
 		$options['headers']       = $headers;
 
 		try {
-			$response = $this->client->request( $method, self::API_BASE . $path, $options );
+			$response = $this->client->request( $method, $this->api_base . $path, $options );
 		} catch ( RequestException $e ) {
 			$response = $e->getResponse();
 			if ( null === $response ) {

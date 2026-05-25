@@ -45,7 +45,7 @@ final class Pinterest_OAuth_Test extends TestCase {
 		$this->history = array();
 		$stack->push( Middleware::history( $this->history ) );
 		$client = new Client( array( 'handler' => $stack ) );
-		return new PinterestOAuth( $client_id, $client_secret, $client );
+		return new PinterestOAuth( $client_id, $client_secret, 'production', $client );
 	}
 
 	public function test_is_configured_requires_both_id_and_secret(): void {
@@ -153,6 +153,24 @@ final class Pinterest_OAuth_Test extends TestCase {
 
 		$this->expectException( PublisherException::class );
 		$oauth->exchange_code( 'C', 'https://example.com/cb' );
+	}
+
+	public function test_sandbox_mode_posts_to_sandbox_token_endpoint(): void {
+		$body          = (string) json_encode( array( 'access_token' => 'sb_tok' ) );
+		$mock          = new MockHandler( array( new Response( 200, array(), $body ) ) );
+		$stack         = HandlerStack::create( $mock );
+		$this->history = array();
+		$stack->push( Middleware::history( $this->history ) );
+		$client = new Client( array( 'handler' => $stack ) );
+
+		$oauth = new PinterestOAuth( 'cid_test', 'csec_test', 'sandbox', $client );
+		$oauth->exchange_code( 'C', 'https://example.com/cb' );
+
+		$sent = $this->history[0]['request'];
+		$this->assertStringContainsString(
+			'api-sandbox.pinterest.com',
+			(string) $sent->getUri()
+		);
 	}
 }
 

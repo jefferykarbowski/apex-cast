@@ -29,10 +29,11 @@ use Psr\Http\Message\ResponseInterface;
  */
 final class PinterestPublisher implements PlatformPublisherInterface {
 
-	private const PLATFORM_ID     = 'pinterest';
-	private const API_BASE        = 'https://api.pinterest.com/v5';
-	private const DESCRIPTION_MAX = 800;
-	private const ALT_TEXT_MAX    = 500;
+	private const PLATFORM_ID         = 'pinterest';
+	private const API_BASE_PRODUCTION = 'https://api.pinterest.com/v5';
+	private const API_BASE_SANDBOX    = 'https://api-sandbox.pinterest.com/v5';
+	private const DESCRIPTION_MAX     = 800;
+	private const ALT_TEXT_MAX        = 500;
 
 	/**
 	 * HTTP client (Guzzle by default, injectable for tests).
@@ -88,6 +89,15 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 	private ?Closure $on_auto_create;
 
 	/**
+	 * Resolved API base URL. Determined at construction from the requested API
+	 * mode; production and sandbox have separate realms and cannot share
+	 * tokens, so the realm is fixed for the publisher's lifetime.
+	 *
+	 * @var string
+	 */
+	private string $api_base;
+
+	/**
 	 * Constructor.
 	 *
 	 * @param string                     $default_board_id Default Pinterest board id (fallback when no tag resolves).
@@ -96,6 +106,7 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 	 * @param PinterestBoardService|null $board_service    Optional board service for auto-create lookups.
 	 * @param Closure|null               $on_auto_create   Optional callback invoked on successful auto-create.
 	 * @param string                     $access_token     Plaintext Pinterest API access token.
+	 * @param string                     $api_mode         'production' (default) or 'sandbox'.
 	 * @param ClientInterface|null       $client           Optional Guzzle client override for tests.
 	 */
 	public function __construct(
@@ -105,6 +116,7 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 		?PinterestBoardService $board_service,
 		?Closure $on_auto_create,
 		string $access_token,
+		string $api_mode = 'production',
 		?ClientInterface $client = null
 	) {
 		$this->default_board_id = $default_board_id;
@@ -113,6 +125,9 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 		$this->board_service    = $board_service;
 		$this->on_auto_create   = $on_auto_create;
 		$this->access_token     = $access_token;
+		$this->api_base         = 'sandbox' === $api_mode
+			? self::API_BASE_SANDBOX
+			: self::API_BASE_PRODUCTION;
 		$this->client           = $client ?? new Client( array( 'timeout' => 30 ) );
 	}
 
@@ -348,7 +363,7 @@ final class PinterestPublisher implements PlatformPublisherInterface {
 		$options['headers']       = $headers;
 
 		try {
-			$response = $this->client->request( $method, self::API_BASE . $path, $options );
+			$response = $this->client->request( $method, $this->api_base . $path, $options );
 		} catch ( RequestException $e ) {
 			$response = $e->getResponse();
 			if ( null === $response ) {

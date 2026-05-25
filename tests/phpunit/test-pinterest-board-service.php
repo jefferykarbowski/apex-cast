@@ -43,7 +43,7 @@ final class Pinterest_Board_Service_Test extends TestCase {
 		$this->history = array();
 		$stack->push( Middleware::history( $this->history ) );
 		$client = new Client( array( 'handler' => $stack ) );
-		return new PinterestBoardService( 'tok_test', $client );
+		return new PinterestBoardService( 'tok_test', 'production', $client );
 	}
 
 	public function test_list_boards_returns_single_page(): void {
@@ -161,5 +161,30 @@ final class Pinterest_Board_Service_Test extends TestCase {
 		$this->expectException( PublisherException::class );
 		$this->expectExceptionMessageMatches( '/credentials/i' );
 		$service->create_public_board( 'Gargamel' );
+	}
+
+	public function test_sandbox_mode_uses_sandbox_host(): void {
+		$body          = (string) json_encode(
+			array(
+				'items'    => array(
+					array( 'id' => 'b1', 'name' => 'Gargamel', 'privacy' => 'PUBLIC' ),
+				),
+				'bookmark' => null,
+			)
+		);
+		$mock          = new MockHandler( array( new Response( 200, array(), $body ) ) );
+		$stack         = HandlerStack::create( $mock );
+		$this->history = array();
+		$stack->push( Middleware::history( $this->history ) );
+		$client = new Client( array( 'handler' => $stack ) );
+
+		$service = new PinterestBoardService( 'tok_test', 'sandbox', $client );
+		$service->list_boards();
+
+		$sent = $this->history[0]['request'];
+		$this->assertStringContainsString(
+			'api-sandbox.pinterest.com',
+			(string) $sent->getUri()
+		);
 	}
 }

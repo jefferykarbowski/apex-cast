@@ -72,6 +72,7 @@ final class Pinterest_Publisher_Test extends TestCase {
 			$board_service,
 			$on_auto_create,
 			$access_token,
+			'production',
 			$client
 		);
 	}
@@ -417,7 +418,7 @@ final class Pinterest_Publisher_Test extends TestCase {
 		$stack->push( Middleware::history( $this->history ) );
 		$client = new Client( array( 'handler' => $stack ) );
 
-		$service = new PinterestBoardService( 'tok', $client );
+		$service = new PinterestBoardService( 'tok', 'production', $client );
 
 		$captured = array();
 		$on_auto  = function ( string $slug, string $new_id ) use ( &$captured ): void {
@@ -431,6 +432,7 @@ final class Pinterest_Publisher_Test extends TestCase {
 			$service,
 			$on_auto,
 			'tok',
+			'production',
 			$client
 		);
 
@@ -453,5 +455,34 @@ final class Pinterest_Publisher_Test extends TestCase {
 		$publisher = $this->publisher_with_responses( array(), 'tok', 'board_42' );
 		$this->assertSame( 'Anraku Ansaku', $publisher->humanize_slug( 'anraku-ansaku' ) );
 		$this->assertSame( 'Gargamel', $publisher->humanize_slug( 'gargamel' ) );
+	}
+
+	public function test_sandbox_mode_uses_sandbox_host(): void {
+		$body          = (string) json_encode( array( 'id' => 'pin_S' ) );
+		$mock          = new MockHandler( array( new Response( 201, array(), $body ) ) );
+		$stack         = HandlerStack::create( $mock );
+		$this->history = array();
+		$stack->push( Middleware::history( $this->history ) );
+		$client = new Client( array( 'handler' => $stack ) );
+
+		$publisher = new PinterestPublisher(
+			'board_42',
+			array(),
+			array(),
+			null,
+			null,
+			'tok',
+			'sandbox',
+			$client
+		);
+
+		$result = $publisher->publish( $this->sample_request() );
+		$this->assertTrue( $result->success );
+
+		$sent = $this->history[0]['request'];
+		$this->assertStringContainsString(
+			'api-sandbox.pinterest.com',
+			(string) $sent->getUri()
+		);
 	}
 }

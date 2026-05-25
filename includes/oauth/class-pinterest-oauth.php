@@ -25,9 +25,10 @@ use GuzzleHttp\Exception\RequestException;
  */
 final class PinterestOAuth {
 
-	private const AUTH_URL_BASE = 'https://www.pinterest.com/oauth/';
-	private const TOKEN_URL     = 'https://api.pinterest.com/v5/oauth/token';
-	private const PLATFORM_ID   = 'pinterest';
+	private const AUTH_URL_BASE        = 'https://www.pinterest.com/oauth/';
+	private const TOKEN_URL_PRODUCTION = 'https://api.pinterest.com/v5/oauth/token';
+	private const TOKEN_URL_SANDBOX    = 'https://api-sandbox.pinterest.com/v5/oauth/token';
+	private const PLATFORM_ID          = 'pinterest';
 
 	/**
 	 * OAuth scopes Pinterest requires for the publish flow.
@@ -70,15 +71,33 @@ final class PinterestOAuth {
 	private string $client_secret;
 
 	/**
+	 * Resolved token-exchange endpoint URL. Determined at construction from the
+	 * requested API mode; production and sandbox issue mutually-incompatible
+	 * tokens, so the realm has to be selected before the OAuth round-trip.
+	 *
+	 * @var string
+	 */
+	private string $token_url;
+
+	/**
 	 * Constructor.
 	 *
 	 * @param string               $client_id     Pinterest app client id.
 	 * @param string               $client_secret Pinterest app client secret.
+	 * @param string               $api_mode      'production' (default) or 'sandbox'.
 	 * @param ClientInterface|null $client        Optional Guzzle client override for tests.
 	 */
-	public function __construct( string $client_id, string $client_secret, ?ClientInterface $client = null ) {
+	public function __construct(
+		string $client_id,
+		string $client_secret,
+		string $api_mode = 'production',
+		?ClientInterface $client = null
+	) {
 		$this->client_id     = $client_id;
 		$this->client_secret = $client_secret;
+		$this->token_url     = 'sandbox' === $api_mode
+			? self::TOKEN_URL_SANDBOX
+			: self::TOKEN_URL_PRODUCTION;
 		$this->client        = $client ?? new Client( array( 'timeout' => 30 ) );
 	}
 
@@ -122,7 +141,7 @@ final class PinterestOAuth {
 		try {
 			$response = $this->client->request(
 				'POST',
-				self::TOKEN_URL,
+				$this->token_url,
 				array(
 					'auth'        => array( $this->client_id, $this->client_secret ),
 					'form_params' => array(

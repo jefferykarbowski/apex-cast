@@ -720,6 +720,10 @@ final class RestController {
 	 * Build a PinterestOAuth instance from wp-config constants. Returns null
 	 * when either credential constant is missing or empty.
 	 *
+	 * Reads `platforms.pinterest.api_mode` from settings and threads it
+	 * through, so the token exchange hits whichever realm the user picked
+	 * before clicking "Connect Pinterest".
+	 *
 	 * @return PinterestOAuth|null
 	 */
 	private function build_pinterest_oauth(): ?PinterestOAuth {
@@ -734,7 +738,9 @@ final class RestController {
 			return null;
 		}
 
-		return new PinterestOAuth( $client_id, $client_secret );
+		$api_mode = (string) Plugin::instance()->settings()->get( 'platforms.pinterest.api_mode', 'production' );
+
+		return new PinterestOAuth( $client_id, $client_secret, $api_mode );
 	}
 
 	/**
@@ -956,13 +962,16 @@ final class RestController {
 	 * @return WP_REST_Response
 	 */
 	public function list_pinterest_boards(): WP_REST_Response {
-		$access_token = Plugin::instance()->settings()->get_secret( 'platforms.pinterest.access_token_encrypted' );
+		$settings_store = Plugin::instance()->settings();
+		$access_token   = $settings_store->get_secret( 'platforms.pinterest.access_token_encrypted' );
 		if ( '' === $access_token ) {
 			return $this->error( 'not_connected', 'Pinterest is not connected.', 400 );
 		}
 
+		$api_mode = (string) $settings_store->get( 'platforms.pinterest.api_mode', 'production' );
+
 		try {
-			$service = new PinterestBoardService( $access_token );
+			$service = new PinterestBoardService( $access_token, $api_mode );
 			$boards  = $service->list_boards();
 		} catch ( PublisherException $e ) {
 			return $this->error( $e->getMessage(), $e->getMessage(), 502 );

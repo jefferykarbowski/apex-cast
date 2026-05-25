@@ -218,13 +218,14 @@ final class Plugin {
 		$settings_store   = $this->settings();
 		$access_token     = $settings_store->get_secret( 'platforms.pinterest.access_token_encrypted' );
 		$default_board_id = (string) $settings_store->get( 'platforms.pinterest.board_id', '' );
+		$api_mode         = (string) $settings_store->get( 'platforms.pinterest.api_mode', 'production' );
 
 		$raw_map         = $settings_store->get( 'platforms.pinterest.tag_board_map', array() );
 		$tag_board_map   = $this->coerce_tag_string_map( is_array( $raw_map ) ? $raw_map : array() );
 		$raw_auto        = $settings_store->get( 'platforms.pinterest.tag_auto_create', array() );
 		$tag_auto_create = $this->coerce_tag_bool_map( is_array( $raw_auto ) ? $raw_auto : array() );
 
-		$board_service = '' !== $access_token ? new PinterestBoardService( $access_token ) : null;
+		$board_service = '' !== $access_token ? new PinterestBoardService( $access_token, $api_mode ) : null;
 
 		// Persist auto-created mappings back into settings so the user sees them
 		// in the UI and so subsequent sends skip the create round-trip. Re-read
@@ -249,7 +250,8 @@ final class Plugin {
 				$tag_auto_create,
 				$board_service,
 				$on_auto_create,
-				$access_token
+				$access_token,
+				$api_mode
 			)
 		);
 	}
