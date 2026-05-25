@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Apex Cast for WooCommerce
  * Plugin URI:        https://github.com/jefferykarbowski/apex-cast
- * Description:       Generate AI social posts from any WooCommerce product, review them inline, and broadcast to Postiz, Buffer, or your own scheduler — without leaving your product editor.
+ * Description:       Broadcast a WooCommerce product's short description, image, and tag hashtags to Facebook Pages, Instagram, and Pinterest from the product editor.
  * Version:           0.1.0
  * Requires at least: 6.0
  * Requires PHP:      8.1
