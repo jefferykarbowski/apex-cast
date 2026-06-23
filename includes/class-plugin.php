@@ -10,6 +10,7 @@ declare( strict_types=1 );
 namespace ApexChute\ApexCast;
 
 use ApexChute\ApexCast\Admin\Admin;
+use ApexChute\ApexCast\Publishers\BlueskyPublisher;
 use ApexChute\ApexCast\Publishers\FacebookPagePublisher;
 use ApexChute\ApexCast\Publishers\InstagramPublisher;
 use ApexChute\ApexCast\Publishers\PinterestBoardService;
@@ -187,6 +188,7 @@ final class Plugin {
 			$this->register_pinterest( $this->publisher_registry );
 			$this->register_facebook( $this->publisher_registry );
 			$this->register_instagram( $this->publisher_registry );
+			$this->register_bluesky( $this->publisher_registry );
 
 			/**
 			 * Fires once per request after first-party publishers are registered,
@@ -321,6 +323,62 @@ final class Plugin {
 		$ig_account_id = (string) $this->settings()->get( 'platforms.instagram.ig_business_account_id', '' );
 		$username      = (string) $this->settings()->get( 'platforms.instagram.username', '' );
 		$registry->register( new InstagramPublisher( $token, $ig_account_id, $username ) );
+	}
+
+	/**
+	 * Register the BlueskyPublisher. Auth is a handle + app password (no OAuth).
+	 * The publisher's image fetch is the only WP-specific dependency, so we
+	 * inject a `wp_remote_get`-based closure here and keep the publisher itself
+	 * WP-free (and thus unit-testable).
+	 *
+	 * @param PublisherRegistry $registry The registry to populate.
+	 * @return void
+	 */
+	private function register_bluesky( PublisherRegistry $registry ): void {
+		$handle       = (string) $this->settings()->get( 'platforms.bluesky.handle', '' );
+		$app_password = $this->settings()->get_secret( 'platforms.bluesky.app_password_encrypted' );
+
+		$image_fetcher = static function ( string $url ): ?array {
+			if ( '' === $url ) {
+				return null;
+			}
+
+			$response = wp_remote_get(
+				$url,
+				array(
+					'timeout' => 20,
+					'headers' => array( 'Accept' => 'image/*' ),
+				)
+			);
+			if ( is_wp_error( $response ) ) {
+				return null;
+			}
+			if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+				return null;
+			}
+
+			$bytes = wp_remote_retrieve_body( $response );
+			if ( ! is_string( $bytes ) || '' === $bytes ) {
+				return null;
+			}
+
+			$mime = (string) wp_remote_retrieve_header( $response, 'content-type' );
+			if ( '' === $mime ) {
+				$mime = 'image/jpeg';
+			}
+			// content-type can carry a charset/extra params; keep only the type.
+			$semicolon = strpos( $mime, ';' );
+			if ( false !== $semicolon ) {
+				$mime = trim( substr( $mime, 0, $semicolon ) );
+			}
+
+			return array(
+				'bytes' => $bytes,
+				'mime'  => $mime,
+			);
+		};
+
+		$registry->register( new BlueskyPublisher( $handle, $app_password, null, $image_fetcher ) );
 	}
 
 	/**

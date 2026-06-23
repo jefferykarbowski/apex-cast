@@ -33,6 +33,7 @@ const PLATFORMS = [
 	{ id: 'facebook', label: 'Facebook' },
 	{ id: 'instagram', label: 'Instagram' },
 	{ id: 'pinterest', label: 'Pinterest' },
+	{ id: 'bluesky', label: 'Bluesky' },
 ];
 
 /**
@@ -756,6 +757,106 @@ function renderInstagramRow({ settings, runTest, renderTestResult }) {
 }
 
 /**
+ * Render the Bluesky row. Bluesky authenticates with a handle + app password
+ * (no OAuth redirect), so this row is a plain form: a handle field, an
+ * app-password field (the password is held in local pending state and only
+ * sent when the user types a fresh one), Test connection, and Disconnect.
+ *
+ * @param {Object}   args                   Render arguments.
+ * @param {Object}   args.settings          Current settings tree.
+ * @param {Function} args.update            Dot-path settings updater.
+ * @param {Function} args.runTest           Test-connection callback (takes target id).
+ * @param {Function} args.disconnectBluesky Disconnect callback.
+ * @param {Function} args.renderTestResult  Renders the saved test-connection result.
+ * @param {string}   args.pendingPassword   Draft app password not yet saved.
+ * @param {Function} args.onPendingPassword Setter for the draft app password.
+ * @return {Element} React element.
+ */
+function renderBlueskyRow({
+	settings,
+	update,
+	runTest,
+	disconnectBluesky,
+	renderTestResult,
+	pendingPassword,
+	onPendingPassword,
+}) {
+	const bluesky = settings.platforms?.bluesky || {};
+	const passwordSet = bluesky.app_password_set === true;
+	const handle = bluesky.handle || '';
+
+	return (
+		<>
+			{passwordSet && handle && (
+				<p>
+					<span className="apex-cast-test-result success">
+						{`Connected as @${handle}.`}
+					</span>
+				</p>
+			)}
+			<p>
+				<label htmlFor="apex-cast-bluesky-handle">
+					{__('Handle:', 'apex-cast')}
+				</label>
+				<br />
+				<input
+					id="apex-cast-bluesky-handle"
+					type="text"
+					className="regular-text"
+					placeholder="viciousfun.bsky.social"
+					value={handle}
+					onChange={(e) =>
+						update('platforms.bluesky.handle', e.target.value)
+					}
+				/>
+			</p>
+			<p>
+				<label htmlFor="apex-cast-bluesky-app-password">
+					{__('App password:', 'apex-cast')}
+				</label>
+				<br />
+				<input
+					id="apex-cast-bluesky-app-password"
+					type="password"
+					className="regular-text"
+					autoComplete="new-password"
+					placeholder={
+						passwordSet ? '•••••••• (saved)' : 'xxxx-xxxx-xxxx-xxxx'
+					}
+					value={pendingPassword}
+					onChange={(e) => onPendingPassword(e.target.value)}
+				/>
+			</p>
+			<p className="description">
+				{__(
+					'Create an app password at Bluesky → Settings → App Passwords. This is not your account password.',
+					'apex-cast'
+				)}
+			</p>
+			<p>
+				<button
+					type="button"
+					className="button"
+					onClick={() => runTest('bluesky')}
+				>
+					{__('Test connection', 'apex-cast')}
+				</button>
+				{renderTestResult('bluesky')}{' '}
+				{passwordSet && (
+					<button
+						type="button"
+						className="button"
+						onClick={disconnectBluesky}
+					>
+						{__('Disconnect', 'apex-cast')}
+					</button>
+				)}
+			</p>
+		</>
+	);
+}
+
+/**
  * Main settings app.
  *
  * @param {Object} props
@@ -778,6 +879,10 @@ export default function SettingsApp({ bootstrapData }) {
 	// "reconnect required" warning only when the user has actually changed it.
 	const [savedPinterestApiMode, setSavedPinterestApiMode] =
 		useState('production');
+	// Draft Bluesky app password. Held locally (never round-tripped through the
+	// settings tree, which only ever sees the `*_set` boolean) and folded into
+	// the save body only when non-empty, mirroring the old anthropic key flow.
+	const [pendingBlueskyPassword, setPendingBlueskyPassword] = useState('');
 
 	// Reserved for future per-platform connect flows; consumed by the heuristic above.
 	void bootstrapData;
@@ -932,15 +1037,30 @@ export default function SettingsApp({ bootstrapData }) {
 			});
 		}
 
+		// Fold in the pending Bluesky app password as plaintext only when the
+		// user typed a new one; the server encrypts it into
+		// app_password_encrypted. An empty draft means "leave the saved one
+		// alone".
+		if (pendingBlueskyPassword) {
+			if (!body.platforms) {
+				body.platforms = {};
+			}
+			if (!body.platforms.bluesky) {
+				body.platforms.bluesky = {};
+			}
+			body.platforms.bluesky.app_password = pendingBlueskyPassword;
+		}
+
 		try {
 			const updated = await saveSettings(body);
 			applyLoadedSettings(updated);
+			setPendingBlueskyPassword('');
 			setSavedAt(Date.now());
 		} catch (e) {
 			setError(e.message);
 		}
 		setSaving(false);
-	}, [settings, applyLoadedSettings]);
+	}, [settings, applyLoadedSettings, pendingBlueskyPassword]);
 
 	/**
 	 * Clear the Pinterest credentials by saving an explicit `access_token: null`.
@@ -998,6 +1118,33 @@ export default function SettingsApp({ bootstrapData }) {
 				const { facebook, instagram, ...rest } = prev;
 				void facebook;
 				void instagram;
+				return rest;
+			});
+			setSavedAt(Date.now());
+		} catch (e) {
+			setError(e.message);
+		}
+		setSaving(false);
+	}, [applyLoadedSettings]);
+
+	/**
+	 * Clear the Bluesky credentials: null the app password (clears the
+	 * ciphertext) and blank the handle. Also drops any pending draft password.
+	 *
+	 * @return {Promise<void>}
+	 */
+	const disconnectBluesky = useCallback(async () => {
+		setSaving(true);
+		setError(null);
+		try {
+			const updated = await saveSettings({
+				platforms: { bluesky: { app_password: null, handle: '' } },
+			});
+			applyLoadedSettings(updated);
+			setPendingBlueskyPassword('');
+			setTestResult((prev) => {
+				const { bluesky, ...rest } = prev;
+				void bluesky;
 				return rest;
 			});
 			setSavedAt(Date.now());
@@ -1375,6 +1522,17 @@ export default function SettingsApp({ bootstrapData }) {
 										settings,
 										runTest,
 										renderTestResult,
+									});
+								} else if (p.id === 'bluesky') {
+									body = renderBlueskyRow({
+										settings,
+										update,
+										runTest,
+										disconnectBluesky,
+										renderTestResult,
+										pendingPassword: pendingBlueskyPassword,
+										onPendingPassword:
+											setPendingBlueskyPassword,
 									});
 								} else {
 									body = renderPlatformPlaceholder();

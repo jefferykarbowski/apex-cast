@@ -265,6 +265,9 @@ final class RestController {
 			// canonical WC product, never the browser, so Pinterest's
 			// tag→board routing can't be tampered with from the client.
 			$platform_options['tag_slugs'] = $context->tag_slugs;
+			// Product name for platforms that render a titled link card
+			// (Bluesky's external embed). Harmless for the others.
+			$platform_options['title'] = $context->title;
 
 			$publish_request = new PublishRequest(
 				$product_id,

@@ -128,7 +128,7 @@ final class Settings {
 	 */
 	public static function defaults(): array {
 		return array(
-			'version'   => 5,
+			'version'   => 6,
 			'store'     => array(
 				'name'              => '',
 				'description'       => '',
@@ -171,6 +171,13 @@ final class Settings {
 					// exists, the publisher will auto-create a public board for
 					// that tag on first send.
 					'tag_auto_create'         => array(),
+				),
+				// Bluesky uses an app password (handle + app-password text),
+				// not OAuth. The password is encrypted at rest like every other
+				// secret; the handle is a plain identifier.
+				'bluesky'   => array(
+					'handle'                 => '',
+					'app_password_encrypted' => '',
 				),
 			),
 		);
