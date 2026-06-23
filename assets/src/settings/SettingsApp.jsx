@@ -1147,6 +1147,55 @@ export default function SettingsApp({ bootstrapData }) {
 								</p>
 							</td>
 						</tr>
+						<tr>
+							<th>{__('Default platforms', 'apex-cast')}</th>
+							<td>
+								<fieldset>
+									<legend className="screen-reader-text">
+										{__('Default platforms', 'apex-cast')}
+									</legend>
+									{PLATFORMS.map((p) => {
+										const selected =
+											settings.store?.default_platforms ||
+											[];
+										const checked = selected.includes(p.id);
+										const toggle = () => {
+											const next = checked
+												? selected.filter(
+														(x) => x !== p.id
+													)
+												: [...selected, p.id];
+											update(
+												'store.default_platforms',
+												next
+											);
+										};
+										const inputId = `apex-cast-default-platform-${p.id}`;
+										return (
+											<label
+												key={p.id}
+												htmlFor={inputId}
+												className="apex-cast-default-platform"
+											>
+												<input
+													id={inputId}
+													type="checkbox"
+													checked={checked}
+													onChange={toggle}
+												/>{' '}
+												{p.label}
+											</label>
+										);
+									})}
+								</fieldset>
+								<p className="description">
+									{__(
+										'Which platforms are pre-checked in the Apex Cast metabox on the product editor. Unconfigured platforms are still hidden in the metabox until you connect them.',
+										'apex-cast'
+									)}
+								</p>
+							</td>
+						</tr>
 					</tbody>
 				</table>
 			)}
