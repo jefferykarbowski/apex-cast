@@ -10,11 +10,13 @@ declare( strict_types=1 );
 namespace ApexChute\ApexCast;
 
 use ApexChute\ApexCast\Admin\Admin;
+use ApexChute\ApexCast\OAuth\ThreadsOAuth;
 use ApexChute\ApexCast\Publishers\BlueskyPublisher;
 use ApexChute\ApexCast\Publishers\FacebookPagePublisher;
 use ApexChute\ApexCast\Publishers\InstagramPublisher;
 use ApexChute\ApexCast\Publishers\PinterestBoardService;
 use ApexChute\ApexCast\Publishers\PinterestPublisher;
+use ApexChute\ApexCast\Publishers\ThreadsPublisher;
 use ApexChute\ApexCast\Rest\RestController;
 
 /**
@@ -189,6 +191,7 @@ final class Plugin {
 			$this->register_facebook( $this->publisher_registry );
 			$this->register_instagram( $this->publisher_registry );
 			$this->register_bluesky( $this->publisher_registry );
+			$this->register_threads( $this->publisher_registry );
 
 			/**
 			 * Fires once per request after first-party publishers are registered,
@@ -379,6 +382,98 @@ final class Plugin {
 		};
 
 		$registry->register( new BlueskyPublisher( $handle, $app_password, null, $image_fetcher ) );
+	}
+
+	/**
+	 * Register the ThreadsPublisher with the stored long-lived token + user id.
+	 *
+	 * Threads long-lived tokens expire at 60 days, so we proactively refresh on
+	 * register: if a token exists and `token_expires_at` is within 7 days of
+	 * now (and the Threads app constants are configured), call
+	 * `refresh_long_lived_token`, persist the rotated token + new expiry, and
+	 * register with the fresh one. If the refresh throws, log a warning and fall
+	 * back to the existing token — a truly-dead token will just fail naturally
+	 * at publish.
+	 *
+	 * @param PublisherRegistry $registry The registry to populate.
+	 * @return void
+	 */
+	private function register_threads( PublisherRegistry $registry ): void {
+		$settings_store = $this->settings();
+		$access_token   = $settings_store->get_secret( 'platforms.threads.access_token_encrypted' );
+		$user_id        = (string) $settings_store->get( 'platforms.threads.user_id', '' );
+		$username       = (string) $settings_store->get( 'platforms.threads.username', '' );
+		$expires_at     = (int) $settings_store->get( 'platforms.threads.token_expires_at', 0 );
+
+		if ( '' !== $access_token && $expires_at > 0 ) {
+			$access_token = $this->maybe_refresh_threads_token( $access_token, $expires_at );
+		}
+
+		$registry->register( new ThreadsPublisher( $access_token, $user_id, $username ) );
+	}
+
+	/**
+	 * Refresh the Threads token if it's within 7 days of expiry and the app
+	 * credentials are available. Returns the (possibly rotated) token; on any
+	 * failure returns the original token unchanged.
+	 *
+	 * @param string $access_token Current long-lived token.
+	 * @param int    $expires_at   Unix timestamp the token expires at.
+	 * @return string
+	 */
+	private function maybe_refresh_threads_token( string $access_token, int $expires_at ): string {
+		$seven_days = 7 * DAY_IN_SECONDS;
+		if ( $expires_at - time() > $seven_days ) {
+			return $access_token;
+		}
+
+		$oauth = $this->build_threads_oauth();
+		if ( null === $oauth ) {
+			return $access_token;
+		}
+
+		try {
+			$refreshed = $oauth->refresh_long_lived_token( $access_token );
+		} catch ( \Exception $e ) {
+			$this->logger()->warn(
+				'plugin.register_threads',
+				'Threads token refresh failed; using existing token.',
+				array( 'error' => $e->getMessage() )
+			);
+			return $access_token;
+		}
+
+		$settings_store = $this->settings();
+		$current        = $settings_store->all();
+		if ( ! isset( $current['platforms']['threads'] ) || ! is_array( $current['platforms']['threads'] ) ) {
+			$current['platforms']['threads'] = array();
+		}
+		$current['platforms']['threads']['access_token_encrypted'] = $settings_store->encrypt_secret( $refreshed['access_token'] );
+		$current['platforms']['threads']['token_expires_at']       = $refreshed['expires_in'] > 0 ? time() + $refreshed['expires_in'] : 0;
+		$settings_store->save( $current );
+
+		return $refreshed['access_token'];
+	}
+
+	/**
+	 * Build a ThreadsOAuth instance from wp-config constants. Returns null when
+	 * either credential constant is missing or empty.
+	 *
+	 * @return ThreadsOAuth|null
+	 */
+	private function build_threads_oauth(): ?ThreadsOAuth {
+		$app_id     = defined( 'APEX_CAST_THREADS_APP_ID' )
+			? (string) constant( 'APEX_CAST_THREADS_APP_ID' )
+			: '';
+		$app_secret = defined( 'APEX_CAST_THREADS_APP_SECRET' )
+			? (string) constant( 'APEX_CAST_THREADS_APP_SECRET' )
+			: '';
+
+		if ( '' === $app_id || '' === $app_secret ) {
+			return null;
+		}
+
+		return new ThreadsOAuth( $app_id, $app_secret );
 	}
 
 	/**

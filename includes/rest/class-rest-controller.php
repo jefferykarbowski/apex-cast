@@ -12,6 +12,7 @@ namespace ApexChute\ApexCast\Rest;
 use ApexChute\ApexCast\OAuth\MetaOAuth;
 use ApexChute\ApexCast\OAuth\OAuthStateStore;
 use ApexChute\ApexCast\OAuth\PinterestOAuth;
+use ApexChute\ApexCast\OAuth\ThreadsOAuth;
 use ApexChute\ApexCast\Plugin;
 use ApexChute\ApexCast\Publishers\PinterestBoardService;
 use ApexChute\ApexCast\Publishers\PublishRequest;
@@ -472,6 +473,15 @@ final class RestController {
 					400
 				);
 			}
+		} elseif ( 'threads' === $platform ) {
+			$oauth = $this->build_threads_oauth();
+			if ( null === $oauth ) {
+				return $this->error(
+					'not_configured',
+					'Threads app credentials are not set. Define APEX_CAST_THREADS_APP_ID and APEX_CAST_THREADS_APP_SECRET in wp-config.php.',
+					400
+				);
+			}
 		} else {
 			return $this->error(
 				'unsupported_platform',
@@ -531,7 +541,7 @@ final class RestController {
 			)
 		);
 
-		if ( 'pinterest' !== $platform && 'facebook' !== $platform ) {
+		if ( 'pinterest' !== $platform && 'facebook' !== $platform && 'threads' !== $platform ) {
 			$this->finish_oauth_callback( $settings_url, $platform, 'unsupported_platform' );
 		}
 
@@ -583,6 +593,8 @@ final class RestController {
 
 		if ( 'pinterest' === $platform ) {
 			$this->handle_pinterest_callback( $settings_url, $code );
+		} elseif ( 'threads' === $platform ) {
+			$this->handle_threads_callback( $settings_url, $code );
 		} else {
 			$this->handle_facebook_callback( $settings_url, $code );
 		}
@@ -624,6 +636,79 @@ final class RestController {
 		$settings_store->save( $current );
 		Plugin::instance()->logger()->info( 'rest.oauth_callback', 'OAuth completed.', array( 'platform' => 'pinterest' ) );
 		$this->finish_oauth_callback( $settings_url, 'pinterest', 'success' );
+	}
+
+	/**
+	 * Threads arm of the OAuth callback. Runs the Threads flow: code →
+	 * short-lived token + user_id → long-lived token → username lookup, then
+	 * stores everything under `platforms.threads.*`.
+	 *
+	 * @param string $settings_url Settings-page URL for the redirect.
+	 * @param string $code         Authorization code.
+	 * @return void
+	 */
+	private function handle_threads_callback( string $settings_url, string $code ): void {
+		$oauth = $this->build_threads_oauth();
+		if ( null === $oauth ) {
+			$this->finish_oauth_callback( $settings_url, 'threads', 'not_configured' );
+		}
+
+		try {
+			$short_lived = $oauth->exchange_code_for_token( $code, $this->oauth_callback_url( 'threads' ) );
+			$long_lived  = $oauth->exchange_for_long_lived_token( $short_lived['access_token'] );
+		} catch ( PublisherException $e ) {
+			Plugin::instance()->logger()->error( 'rest.oauth_callback', $e->getMessage(), array( 'platform' => 'threads' ) );
+			$this->finish_oauth_callback( $settings_url, 'threads', 'token_exchange_failed' );
+		}
+
+		$username = $this->fetch_threads_username( $long_lived['access_token'] );
+
+		$settings_store = Plugin::instance()->settings();
+		$current        = $settings_store->all();
+		if ( ! isset( $current['platforms']['threads'] ) || ! is_array( $current['platforms']['threads'] ) ) {
+			$current['platforms']['threads'] = array();
+		}
+
+		$current['platforms']['threads']['user_id']                = $short_lived['user_id'];
+		$current['platforms']['threads']['username']               = $username;
+		$current['platforms']['threads']['access_token_encrypted'] = $settings_store->encrypt_secret( $long_lived['access_token'] );
+		$current['platforms']['threads']['token_expires_at']       = $long_lived['expires_in'] > 0 ? time() + $long_lived['expires_in'] : 0;
+
+		$settings_store->save( $current );
+		Plugin::instance()->logger()->info( 'rest.oauth_callback', 'OAuth completed.', array( 'platform' => 'threads' ) );
+		$this->finish_oauth_callback( $settings_url, 'threads', 'success' );
+	}
+
+	/**
+	 * Best-effort fetch of the connected Threads profile's username, used only
+	 * for the "Connected as @x" display. Returns an empty string on any failure
+	 * — a missing username must not derail the connection.
+	 *
+	 * @param string $access_token Long-lived Threads token.
+	 * @return string
+	 */
+	private function fetch_threads_username( string $access_token ): string {
+		$url = add_query_arg(
+			array(
+				'fields'       => 'id,username',
+				'access_token' => $access_token,
+			),
+			'https://graph.threads.net/v1.0/me'
+		);
+
+		$response = wp_remote_get( $url, array( 'timeout' => 20 ) );
+		if ( is_wp_error( $response ) ) {
+			return '';
+		}
+		if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+			return '';
+		}
+
+		$data = json_decode( (string) wp_remote_retrieve_body( $response ), true );
+		if ( ! is_array( $data ) || ! isset( $data['username'] ) ) {
+			return '';
+		}
+		return (string) $data['username'];
 	}
 
 	/**
@@ -765,6 +850,28 @@ final class RestController {
 		}
 
 		return new MetaOAuth( $app_id, $app_secret );
+	}
+
+	/**
+	 * Build a ThreadsOAuth instance from wp-config constants. Returns null when
+	 * either credential constant is missing or empty. Threads is a separate
+	 * Meta app from the Facebook/Instagram one, hence its own constants.
+	 *
+	 * @return ThreadsOAuth|null
+	 */
+	private function build_threads_oauth(): ?ThreadsOAuth {
+		$app_id     = defined( 'APEX_CAST_THREADS_APP_ID' )
+			? (string) constant( 'APEX_CAST_THREADS_APP_ID' )
+			: '';
+		$app_secret = defined( 'APEX_CAST_THREADS_APP_SECRET' )
+			? (string) constant( 'APEX_CAST_THREADS_APP_SECRET' )
+			: '';
+
+		if ( '' === $app_id || '' === $app_secret ) {
+			return null;
+		}
+
+		return new ThreadsOAuth( $app_id, $app_secret );
 	}
 
 	/**

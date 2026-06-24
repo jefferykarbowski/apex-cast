@@ -128,7 +128,7 @@ final class Settings {
 	 */
 	public static function defaults(): array {
 		return array(
-			'version'   => 6,
+			'version'   => 7,
 			'store'     => array(
 				'name'              => '',
 				'description'       => '',
@@ -178,6 +178,17 @@ final class Settings {
 				'bluesky'   => array(
 					'handle'                 => '',
 					'app_password_encrypted' => '',
+				),
+				// Threads is a Meta product but a SEPARATE OAuth client from the
+				// Facebook/Instagram one — its own Threads App ID/secret,
+				// threads.net auth host, and graph.threads.net API. The flow
+				// captures a numeric Threads user_id (the publishing target) and
+				// a long-lived (~60-day) token we refresh on register.
+				'threads'   => array(
+					'user_id'                => '',
+					'username'               => '',
+					'access_token_encrypted' => '',
+					'token_expires_at'       => 0,
 				),
 			),
 		);

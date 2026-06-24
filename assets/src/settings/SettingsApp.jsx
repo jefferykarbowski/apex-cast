@@ -34,6 +34,7 @@ const PLATFORMS = [
 	{ id: 'instagram', label: 'Instagram' },
 	{ id: 'pinterest', label: 'Pinterest' },
 	{ id: 'bluesky', label: 'Bluesky' },
+	{ id: 'threads', label: 'Threads' },
 ];
 
 /**
@@ -857,6 +858,82 @@ function renderBlueskyRow({
 }
 
 /**
+ * Render the Threads configuration row. Single-step OAuth (no linked-account
+ * sub-row): Connect kicks off the Threads consent screen, and once a token is
+ * stored the row shows the connected handle plus Test / Disconnect.
+ *
+ * @param {Object}   args                   Render arguments.
+ * @param {Object}   args.settings          Current settings tree.
+ * @param {Function} args.runTest           Test-connection callback (takes target id).
+ * @param {Function} args.disconnectThreads Disconnect callback.
+ * @param {Function} args.renderTestResult  Renders the saved test-connection result.
+ * @param {Function} args.onStartConnect    "Connect Threads" click handler.
+ * @return {Element} React element.
+ */
+function renderThreadsRow({
+	settings,
+	runTest,
+	disconnectThreads,
+	renderTestResult,
+	onStartConnect,
+}) {
+	const threads = settings.platforms?.threads || {};
+	const tokenSet = threads.access_token_set === true;
+
+	if (tokenSet) {
+		const username = threads.username || '';
+		return (
+			<>
+				<p>
+					<span className="apex-cast-test-result success">
+						{username
+							? `Connected to Threads as @${username}.`
+							: __('Connected to Threads.', 'apex-cast')}
+					</span>
+				</p>
+				<p>
+					<button
+						type="button"
+						className="button"
+						onClick={() => runTest('threads')}
+					>
+						{__('Test connection', 'apex-cast')}
+					</button>
+					{renderTestResult('threads')}{' '}
+					<button
+						type="button"
+						className="button"
+						onClick={disconnectThreads}
+					>
+						{__('Disconnect', 'apex-cast')}
+					</button>
+				</p>
+			</>
+		);
+	}
+
+	return (
+		<>
+			<p>
+				<button
+					type="button"
+					className="button button-primary"
+					onClick={onStartConnect}
+				>
+					{__('Connect Threads', 'apex-cast')}
+				</button>
+			</p>
+			<p className="description">
+				{__(
+					"You'll be redirected to Threads to authorize Apex Cast on its consent screen.",
+					'apex-cast'
+				)}
+			</p>
+		</>
+	);
+}
+
+/**
  * Main settings app.
  *
  * @param {Object} props
@@ -1009,6 +1086,26 @@ export default function SettingsApp({ bootstrapData }) {
 		}
 	}, []);
 
+	/**
+	 * Kick off the Threads OAuth flow. Single-step: the user authorizes on the
+	 * Threads consent screen and returns via the generic callback handler.
+	 *
+	 * @return {Promise<void>}
+	 */
+	const startThreadsConnect = useCallback(async () => {
+		setError(null);
+		try {
+			const result = await startOAuth('threads');
+			if (result && result.auth_url) {
+				window.location.href = result.auth_url;
+			} else {
+				setError('Server did not return an auth URL.');
+			}
+		} catch (e) {
+			setError(e.message);
+		}
+	}, []);
+
 	const update = useCallback((path, value) => {
 		setSettings((prev) => setPath(prev, path, value));
 		setSavedAt(null);
@@ -1145,6 +1242,34 @@ export default function SettingsApp({ bootstrapData }) {
 			setTestResult((prev) => {
 				const { bluesky, ...rest } = prev;
 				void bluesky;
+				return rest;
+			});
+			setSavedAt(Date.now());
+		} catch (e) {
+			setError(e.message);
+		}
+		setSaving(false);
+	}, [applyLoadedSettings]);
+
+	/**
+	 * Clear the Threads credentials: null the access token (clears the
+	 * ciphertext) and blank the user_id + username.
+	 *
+	 * @return {Promise<void>}
+	 */
+	const disconnectThreads = useCallback(async () => {
+		setSaving(true);
+		setError(null);
+		try {
+			const updated = await saveSettings({
+				platforms: {
+					threads: { access_token: null, user_id: '', username: '' },
+				},
+			});
+			applyLoadedSettings(updated);
+			setTestResult((prev) => {
+				const { threads, ...rest } = prev;
+				void threads;
 				return rest;
 			});
 			setSavedAt(Date.now());
@@ -1533,6 +1658,14 @@ export default function SettingsApp({ bootstrapData }) {
 										pendingPassword: pendingBlueskyPassword,
 										onPendingPassword:
 											setPendingBlueskyPassword,
+									});
+								} else if (p.id === 'threads') {
+									body = renderThreadsRow({
+										settings,
+										runTest,
+										disconnectThreads,
+										renderTestResult,
+										onStartConnect: startThreadsConnect,
 									});
 								} else {
 									body = renderPlatformPlaceholder();
