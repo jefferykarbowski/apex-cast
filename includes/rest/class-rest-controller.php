@@ -158,6 +158,28 @@ final class RestController {
 				'permission_callback' => '__return_true',
 			)
 		);
+
+		// Meta-required Threads callbacks. Public — Meta calls them server-to-
+		// server; the HMAC signature on the signed_request is the auth gate.
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/threads/deauthorize',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'threads_deauthorize' ),
+				'permission_callback' => '__return_true',
+			)
+		);
+
+		register_rest_route(
+			self::REST_NAMESPACE,
+			'/threads/data-deletion',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'threads_data_deletion' ),
+				'permission_callback' => '__return_true',
+			)
+		);
 	}
 
 	/**
@@ -872,6 +894,134 @@ final class RestController {
 		}
 
 		return new ThreadsOAuth( $app_id, $app_secret );
+	}
+
+	/**
+	 * POST /threads/deauthorize — Meta's deauthorize callback.
+	 *
+	 * Fired when a user removes the app from their Threads account. Meta sends a
+	 * single `signed_request` form param (HMAC-signed with the Threads app
+	 * secret). We verify it and clear the stored Threads credentials. Meta wants
+	 * a 200; no specific body is required.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @return WP_REST_Response
+	 */
+	public function threads_deauthorize( WP_REST_Request $request ): WP_REST_Response {
+		$data = $this->parse_threads_signed_request( $request );
+		if ( null === $data ) {
+			return new WP_REST_Response( array( 'error' => 'invalid_signed_request' ), 400 );
+		}
+
+		$this->clear_threads_credentials( isset( $data['user_id'] ) ? (string) $data['user_id'] : '' );
+
+		return new WP_REST_Response( array( 'success' => true ), 200 );
+	}
+
+	/**
+	 * POST /threads/data-deletion — Meta's data-deletion-request callback.
+	 *
+	 * Same signed_request shape as deauthorize, but Meta requires a JSON body of
+	 * `{ url, confirmation_code }` pointing the user at a status page. The only
+	 * personal data we hold for Threads is the access token, which we clear here.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @return WP_REST_Response
+	 */
+	public function threads_data_deletion( WP_REST_Request $request ): WP_REST_Response {
+		$data = $this->parse_threads_signed_request( $request );
+		if ( null === $data ) {
+			return new WP_REST_Response( array( 'error' => 'invalid_signed_request' ), 400 );
+		}
+
+		$user_id = isset( $data['user_id'] ) ? (string) $data['user_id'] : '';
+		$this->clear_threads_credentials( $user_id );
+
+		$confirmation_code = 'ac_threads_' . substr( hash( 'sha256', $user_id . '|' . wp_salt() ), 0, 16 );
+
+		return new WP_REST_Response(
+			array(
+				'url'               => 'https://apexchute.com/privacy',
+				'confirmation_code' => $confirmation_code,
+			),
+			200
+		);
+	}
+
+	/**
+	 * Verify and decode a Meta `signed_request` from a Threads callback.
+	 *
+	 * Format is `base64url(hmac_sha256_sig).base64url(json_payload)`; the
+	 * signature is keyed off the Threads app secret. Returns the decoded payload
+	 * array, or null when the secret is unset, the param is missing/malformed, or
+	 * the signature does not match.
+	 *
+	 * @param WP_REST_Request $request REST request.
+	 * @return array<string, mixed>|null
+	 */
+	private function parse_threads_signed_request( WP_REST_Request $request ): ?array {
+		$secret = defined( 'APEX_CAST_THREADS_APP_SECRET' ) ? (string) constant( 'APEX_CAST_THREADS_APP_SECRET' ) : '';
+		if ( '' === $secret ) {
+			return null;
+		}
+
+		$signed = (string) ( $request->get_param( 'signed_request' ) ?? '' );
+		if ( '' === $signed || ! str_contains( $signed, '.' ) ) {
+			return null;
+		}
+
+		list( $encoded_sig, $payload ) = explode( '.', $signed, 2 );
+		$signature                     = $this->base64url_decode( $encoded_sig );
+		$expected                      = hash_hmac( 'sha256', $payload, $secret, true );
+		if ( '' === $signature || ! hash_equals( $expected, $signature ) ) {
+			return null;
+		}
+
+		$decoded = json_decode( $this->base64url_decode( $payload ), true );
+		return is_array( $decoded ) ? $decoded : null;
+	}
+
+	/**
+	 * Decode a base64url string (Meta's signed_request uses the URL-safe alphabet
+	 * without padding).
+	 *
+	 * @param string $input base64url input.
+	 * @return string Decoded bytes, or empty string on failure.
+	 */
+	private function base64url_decode( string $input ): string {
+		$remainder = strlen( $input ) % 4;
+		if ( 0 !== $remainder ) {
+			$input .= str_repeat( '=', 4 - $remainder );
+		}
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Decoding Meta's signed_request payload, which is base64url-encoded by spec.
+		$decoded = base64_decode( strtr( $input, '-_', '+/' ), true );
+		return false === $decoded ? '' : $decoded;
+	}
+
+	/**
+	 * Clear the stored Threads credentials. No-op when a user id is supplied that
+	 * doesn't match the connected account (defends against a callback for some
+	 * other account clearing ours).
+	 *
+	 * @param string $user_id Threads user id from the callback (empty = clear unconditionally).
+	 * @return void
+	 */
+	private function clear_threads_credentials( string $user_id ): void {
+		$settings = Plugin::instance()->settings();
+		$stored   = (string) $settings->get( 'platforms.threads.user_id', '' );
+		if ( '' !== $user_id && '' !== $stored && $stored !== $user_id ) {
+			return;
+		}
+
+		$all = $settings->all();
+		if ( ! isset( $all['platforms']['threads'] ) || ! is_array( $all['platforms']['threads'] ) ) {
+			return;
+		}
+		$all['platforms']['threads']['access_token_encrypted'] = '';
+		$all['platforms']['threads']['user_id']                = '';
+		$all['platforms']['threads']['username']               = '';
+		$all['platforms']['threads']['token_expires_at']       = 0;
+		$settings->save( $all );
 	}
 
 	/**
